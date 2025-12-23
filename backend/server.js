@@ -518,14 +518,13 @@ app.use((error, req, res, next) => {
 // Start server
 const startServer = async () => {
   try {
-    // Test database connection
+    // Test database connection (don't crash server if it fails – just log)
     const dbConnected = await testConnection();
     if (!dbConnected) {
-      console.error('❌ Failed to connect to database. Server will not start.');
-      process.exit(1);
+      console.error('❌ Failed to connect to database. Server will still start, but DB-dependent routes may fail.');
     }
 
-    // Test email configuration
+    // Test email configuration (also don't block server start)
     const emailConfigured = await verifyEmailConfig();
     if (!emailConfigured) {
       console.warn('⚠️ Email service not configured. OTP functionality will not work.');
@@ -534,12 +533,12 @@ const startServer = async () => {
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📧 Email service: ${emailConfigured ? '✅ Configured' : '❌ Not configured'}`);
-      console.log(`🗄️ Database: ✅ Connected`);
+      console.log(`🗄️ Database: ${dbConnected ? '✅ Connected' : '❌ Connection failed'}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
-    process.exit(1);
+    // Do not force-exit; let platform handle restart / logs
   }
 };
 
