@@ -125,18 +125,27 @@ app.get('/health', (req, res) => {
 
 // Test database connection route
 app.get('/test-db', async (req, res) => {
+  let connection = null;
   try {
     console.log('Testing database connection...');
-    const { testConnection } = await import('./config/database.js');
     const mysql = await import('mysql2/promise');
     const { dbConfig } = await import('./config/database.js');
     
-    const dbStatus = await testConnection();
+    // Log config (without password)
+    console.log('DB Config:', {
+      host: dbConfig.host,
+      user: dbConfig.user,
+      database: dbConfig.database,
+      port: dbConfig.port
+    });
     
-    if (dbStatus.ok) {
-      // Test if required tables exist
-      const connection = await mysql.default.createConnection(dbConfig);
+    // Try direct connection first
+    try {
+      connection = await mysql.default.createConnection(dbConfig);
+      await connection.query('SELECT 1');
+      console.log('✅ Direct connection successful');
       
+      // Test if required tables exist
       const [poAgreements] = await connection.execute("SHOW TABLES LIKE 'po_agreements'");
       const [apSuppliers] = await connection.execute("SHOW TABLES LIKE 'ap_suppliers'");
       const [poAgreementLines] = await connection.execute("SHOW TABLES LIKE 'po_agreement_lines'");
@@ -152,23 +161,53 @@ app.get('/test-db', async (req, res) => {
           po_agreement_lines: poAgreementLines.length > 0
         }
       });
-    } else {
+    } catch (connError) {
+      console.error('❌ Direct connection failed:', connError);
+      
+      if (connection) {
+        try {
+          await connection.end();
+        } catch (e) {
+          // Ignore
+        }
+      }
+      
+      // Return detailed error
       res.status(500).json({
         success: false,
         message: 'Database connection failed',
-        // Expose non-sensitive debug info to help diagnose Hostinger issues
-        details: dbStatus.error?.message || null,
-        code: dbStatus.error?.code || null,
-        errno: dbStatus.error?.errno || null,
-        sqlState: dbStatus.error?.sqlState || null
+        details: connError.message || 'Unknown error',
+        code: connError.code || null,
+        errno: connError.errno || null,
+        sqlState: connError.sqlState || null,
+        config: {
+          host: dbConfig.host,
+          user: dbConfig.user,
+          database: dbConfig.database,
+          port: dbConfig.port
+        }
       });
     }
   } catch (error) {
     console.error('Database test error:', error);
+    
+    if (connection) {
+      try {
+        await connection.end();
+      } catch (e) {
+        // Ignore
+      }
+    }
+    
     res.status(500).json({
       success: false,
+      message: 'Database connection failed',
       error: 'Database test failed',
-      details: error.message
+      details: error.message || 'Unknown error',
+      code: error.code || null,
+      errno: error.errno || null,
+      sqlState: error.sqlState || null,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
