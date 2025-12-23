@@ -17,16 +17,37 @@ export const dbConfig = {
 // Create connection pool
 const pool = mysql.createPool(dbConfig);
 
-// Test database connection
+// Test database connection with detailed logging (no secrets)
 export const testConnection = async () => {
   try {
     const connection = await pool.getConnection();
-    console.log('✅ Database connected successfully');
+    // Simple ping
+    await connection.query('SELECT 1');
     connection.release();
-    return true;
+
+    console.log('✅ Database connected successfully', {
+      host: dbConfig.host,
+      user: dbConfig.user,
+      database: dbConfig.database,
+      port: dbConfig.port
+    });
+
+    return { ok: true };
   } catch (error) {
-    console.error('❌ Database connection failed:', error.message);
-    return false;
+    console.error('❌ Database connection failed', {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      sqlState: error.sqlState,
+      config: {
+        host: dbConfig.host,
+        user: dbConfig.user,
+        database: dbConfig.database,
+        port: dbConfig.port
+      }
+    });
+
+    return { ok: false, error };
   }
 };
 

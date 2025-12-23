@@ -131,9 +131,9 @@ app.get('/test-db', async (req, res) => {
     const mysql = await import('mysql2/promise');
     const { dbConfig } = await import('./config/database.js');
     
-    const dbConnected = await testConnection();
+    const dbStatus = await testConnection();
     
-    if (dbConnected) {
+    if (dbStatus.ok) {
       // Test if required tables exist
       const connection = await mysql.default.createConnection(dbConfig);
       
@@ -155,7 +155,12 @@ app.get('/test-db', async (req, res) => {
     } else {
       res.status(500).json({
         success: false,
-        message: 'Database connection failed'
+        message: 'Database connection failed',
+        // Expose non-sensitive debug info to help diagnose Hostinger issues
+        details: dbStatus.error?.message || null,
+        code: dbStatus.error?.code || null,
+        errno: dbStatus.error?.errno || null,
+        sqlState: dbStatus.error?.sqlState || null
       });
     }
   } catch (error) {
@@ -519,9 +524,9 @@ app.use((error, req, res, next) => {
 const startServer = async () => {
   try {
     // Test database connection (don't crash server if it fails – just log)
-    const dbConnected = await testConnection();
-    if (!dbConnected) {
-      console.error('❌ Failed to connect to database. Server will still start, but DB-dependent routes may fail.');
+    const dbStatus = await testConnection();
+    if (!dbStatus.ok) {
+      console.error('❌ Failed to connect to database on startup. Server will still start, but DB-dependent routes may fail.');
     }
 
     // Test email configuration (also don't block server start)
@@ -533,7 +538,7 @@ const startServer = async () => {
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📧 Email service: ${emailConfigured ? '✅ Configured' : '❌ Not configured'}`);
-      console.log(`🗄️ Database: ${dbConnected ? '✅ Connected' : '❌ Connection failed'}`);
+      console.log(`🗄️ Database: ${dbStatus.ok ? '✅ Connected' : '❌ Connection failed'}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     });
   } catch (error) {
