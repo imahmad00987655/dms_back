@@ -123,6 +123,68 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Debug database connection - shows env vars and tries direct connection
+app.get('/debug-db', async (req, res) => {
+  const mysql = await import('mysql2/promise');
+  
+  const config = {
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'fluent_financial_flow',
+    port: parseInt(process.env.DB_PORT) || 3306
+  };
+  
+  // Show config (without password)
+  const configSafe = {
+    host: config.host,
+    user: config.user,
+    database: config.database,
+    port: config.port,
+    passwordSet: !!config.password
+  };
+  
+  let connection = null;
+  try {
+    console.log('🔍 DEBUG: Attempting connection with:', configSafe);
+    
+    connection = await mysql.default.createConnection(config);
+    await connection.query('SELECT 1 as test');
+    
+    const [tables] = await connection.execute("SHOW TABLES");
+    
+    await connection.end();
+    
+    res.json({
+      success: true,
+      message: 'Database connection successful',
+      config: configSafe,
+      tablesCount: tables.length
+    });
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.end();
+      } catch (e) {}
+    }
+    
+    console.error('🔍 DEBUG: Connection failed:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Database connection failed',
+      config: configSafe,
+      error: {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState,
+        sqlMessage: error.sqlMessage
+      }
+    });
+  }
+});
+
 // Test database connection route
 app.get('/test-db', async (req, res) => {
   let connection = null;
