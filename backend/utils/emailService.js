@@ -16,17 +16,19 @@ const transporter = nodemailer.createTransport({
   // Enhanced TLS options for Hostinger
   tls: {
     rejectUnauthorized: false, // Allow self-signed certificates (sometimes needed on shared hosting)
-    ciphers: 'SSLv3'
+    // Remove ciphers restriction - let Node.js choose best cipher
   },
+  // Require TLS for port 587
+  requireTLS: true,
   // Connection timeout
   connectionTimeout: 10000, // 10 seconds
   // Greeting timeout
   greetingTimeout: 10000,
   // Socket timeout
   socketTimeout: 10000,
-  // Debug mode (set to true for detailed logs)
-  debug: process.env.NODE_ENV === 'development',
-  logger: process.env.NODE_ENV === 'development'
+  // Debug mode - ALWAYS ON for production to see email issues
+  debug: true,
+  logger: true
 });
 
 // Verify transporter configuration

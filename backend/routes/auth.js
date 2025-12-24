@@ -265,9 +265,17 @@ router.post('/signup',
       // Send OTP email (handle if email service fails)
       try {
         await sendOTPEmail(sanitizedData.email, otp, 'email_verification');
+        console.log(`✅ OTP email sent successfully to ${sanitizedData.email}`);
       } catch (emailError) {
-        console.warn('⚠️ Failed to send OTP email:', emailError.message);
+        console.error('❌ CRITICAL: Failed to send OTP email during signup:');
+        console.error('  Email:', sanitizedData.email);
+        console.error('  OTP:', otp);
+        console.error('  Error message:', emailError.message);
+        console.error('  Error code:', emailError.code);
+        console.error('  Error stack:', emailError.stack);
+        console.error('  Full error:', emailError);
         // Don't fail signup if email fails - user can request OTP again
+        // But log it as ERROR not WARNING so it's visible in logs
       }
 
       // Create audit log
@@ -383,9 +391,16 @@ router.post('/verify-otp',
         // Send welcome email (handle if email service fails)
         try {
           await sendWelcomeEmail(sanitizedEmail, users[0].first_name);
+          console.log(`✅ Welcome email sent successfully to ${sanitizedEmail}`);
         } catch (emailError) {
-          console.warn('⚠️ Failed to send welcome email:', emailError.message);
+          console.error('❌ CRITICAL: Failed to send welcome email during OTP verification:');
+          console.error('  Email:', sanitizedEmail);
+          console.error('  Error message:', emailError.message);
+          console.error('  Error code:', emailError.code);
+          console.error('  Error stack:', emailError.stack);
+          console.error('  Full error:', emailError);
           // Don't fail verification if email fails
+          // But log it as ERROR not WARNING so it's visible in logs
         }
 
         // Create audit log (handle if audit_logs table doesn't exist)
@@ -498,13 +513,21 @@ router.post('/forgot-password',
         }
       }
 
-      // Send OTP email (handle if email service fails)
-      try {
-        await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
-      } catch (emailError) {
-        console.warn('⚠️ Failed to send OTP email:', emailError.message);
-        // Don't fail forgot-password if email fails
-      }
+        // Send OTP email (handle if email service fails)
+        try {
+          await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
+          console.log(`✅ OTP email sent successfully to ${sanitizedEmail}`);
+        } catch (emailError) {
+          console.error('❌ CRITICAL: Failed to send OTP email during forgot-password:');
+          console.error('  Email:', sanitizedEmail);
+          console.error('  OTP:', otp);
+          console.error('  Error message:', emailError.message);
+          console.error('  Error code:', emailError.code);
+          console.error('  Error stack:', emailError.stack);
+          console.error('  Full error:', emailError);
+          // Don't fail forgot-password if email fails
+          // But log it as ERROR not WARNING so it's visible in logs
+        }
 
       // Create audit log
       await createAuditLog(executeQuery, users[0].id, 'PASSWORD_RESET_REQUESTED', 'Password reset requested', req.ip, req.get('User-Agent'));
