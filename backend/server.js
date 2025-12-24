@@ -66,40 +66,65 @@ console.log('🌍 CORS Allowed Origins:', uniqueOrigins);
 console.log('🌍 CORS_ORIGIN env:', process.env.CORS_ORIGIN || 'Not set');
 console.log('🌍 Production Frontend (hardcoded):', productionFrontend);
 
-// Security middleware
+// CORS configuration - MUST BE BEFORE HELMET to avoid header conflicts
+app.use(cors({
+  origin: function (origin, callback) {
+    console.log(`🔍 CORS Check - Request Origin: ${origin || 'No origin'}`);
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      console.log('✅ CORS: No origin, allowing request');
+      return callback(null, true);
+    }
+    
+    // Check if origin is in allowed list
+    if (uniqueOrigins.indexOf(origin) !== -1) {
+      console.log(`✅ CORS: Origin ${origin} is allowed`);
+      callback(null, true);
+    } else {
+      console.log(`❌ CORS: Origin ${origin} is NOT in allowed list`);
+      console.log(`📋 Allowed origins: ${uniqueOrigins.join(', ')}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+  maxAge: 86400 // 24 hours
+}));
+
+// Manual OPTIONS handler as backup (before other routes)
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  console.log(`🔧 Manual OPTIONS handler - Origin: ${origin || 'No origin'}`);
+  
+  if (!origin || uniqueOrigins.indexOf(origin) !== -1) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    res.sendStatus(204);
+  } else {
+    res.status(403).json({ error: 'CORS not allowed' });
+  }
+});
+
+// Security middleware (after CORS)
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:", ...allowedOrigins],
+      imgSrc: ["'self'", "data:", "https:", ...uniqueOrigins],
     },
   },
   crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin requests for resources
   crossOriginEmbedderPolicy: false, // Disable to allow embedding resources from different origins
-}));
-
-// CORS configuration - supports local dev + production domains from env
-app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    // Use uniqueOrigins instead of allowedOrigins
-    if (uniqueOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('❌ CORS blocked origin:', origin);
-      console.log('✅ Allowed origins:', uniqueOrigins);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  preflightContinue: false,
-  optionsSuccessStatus: 204
 }));
 
 // Rate limiting
