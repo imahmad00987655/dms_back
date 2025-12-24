@@ -32,6 +32,13 @@ import path from 'path';
 // Load environment variables
 dotenv.config();
 
+// Log environment variables status on startup (for debugging)
+console.log('🔍 Environment Variables Status:');
+console.log('  NODE_ENV:', process.env.NODE_ENV || 'not set');
+console.log('  JWT_SECRET:', process.env.JWT_SECRET ? `✅ Set (${process.env.JWT_SECRET.length} chars)` : '❌ Not set');
+console.log('  DB_HOST:', process.env.DB_HOST || 'not set');
+console.log('  PORT:', process.env.PORT || 'not set');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -497,14 +504,24 @@ app.get('/test-db', async (req, res) => {
 
 // Test JWT_SECRET endpoint
 app.get('/test-jwt', (req, res) => {
+  // Reload environment variables
+  dotenv.config();
+  
   const jwtSecret = process.env.JWT_SECRET;
+  const allEnvKeys = Object.keys(process.env).filter(key => key.includes('JWT') || key.includes('SECRET'));
+  
   res.json({
     success: !!jwtSecret,
     message: jwtSecret ? 'JWT_SECRET is configured' : 'JWT_SECRET is missing',
     jwtSecretSet: !!jwtSecret,
     jwtSecretLength: jwtSecret ? jwtSecret.length : 0,
     // Don't expose the actual secret
-    hint: jwtSecret ? `Secret is ${jwtSecret.length} characters long` : 'Please set JWT_SECRET in environment variables'
+    hint: jwtSecret ? `Secret is ${jwtSecret.length} characters long` : 'Please set JWT_SECRET in environment variables',
+    // Debug info
+    nodeEnv: process.env.NODE_ENV,
+    allJwtRelatedKeys: allEnvKeys,
+    // Check if dotenv loaded anything
+    dotenvLoaded: !!process.env.DB_HOST || !!process.env.DB_USER
   });
 });
 
