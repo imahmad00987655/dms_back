@@ -72,6 +72,25 @@ export const verifyEmailConfig = async () => {
 // Send OTP email
 export const sendOTPEmail = async (email, otp, type = 'verification') => {
   try {
+    // CRITICAL: Check email credentials BEFORE attempting to send
+    console.log('🔍 Pre-flight check: Verifying email credentials...');
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.EMAIL_FROM) {
+      const missing = [];
+      if (!process.env.EMAIL_USER) missing.push('EMAIL_USER');
+      if (!process.env.EMAIL_PASS) missing.push('EMAIL_PASS');
+      if (!process.env.EMAIL_FROM) missing.push('EMAIL_FROM');
+      
+      console.error('❌ CRITICAL: Email environment variables missing:', missing.join(', '));
+      console.error('  EMAIL_USER:', process.env.EMAIL_USER ? '✅ Set' : '❌ NOT SET');
+      console.error('  EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET');
+      console.error('  EMAIL_FROM:', process.env.EMAIL_FROM ? '✅ Set' : '❌ NOT SET');
+      throw new Error(`Email service not configured: Missing ${missing.join(', ')}. Please set these in Hostinger environment variables.`);
+    }
+    
+    console.log('✅ Email credentials check passed');
+    console.log('  EMAIL_USER:', process.env.EMAIL_USER.substring(0, 3) + '***');
+    console.log('  EMAIL_FROM:', process.env.EMAIL_FROM);
+    
     const subject = type === 'password_reset' 
       ? 'Password Reset Verification Code' 
       : 'Email Verification Code';
@@ -120,9 +139,13 @@ export const sendOTPEmail = async (email, otp, type = 'verification') => {
     };
 
     console.log(`📧 Attempting to send OTP email to ${email}...`);
-    console.log(`  From: ${process.env.EMAIL_FROM || 'NOT SET'}`);
+    console.log(`  From: ${process.env.EMAIL_FROM}`);
     console.log(`  Subject: ${subject}`);
+    console.log(`  Host: ${process.env.EMAIL_HOST || 'smtp.gmail.com'}`);
+    console.log(`  Port: ${process.env.EMAIL_PORT || 587}`);
     
+    // Try to send email (transporter.verify() is slow, so we'll catch errors during sendMail)
+    console.log('📤 Sending email via SMTP...');
     const result = await transporter.sendMail(mailOptions);
     console.log(`✅ OTP email sent successfully to ${email}`);
     console.log(`  Message ID: ${result.messageId}`);
@@ -192,6 +215,15 @@ export const sendWelcomeEmail = async (email, firstName) => {
       </div>
     `;
 
+    // CRITICAL: Check email credentials BEFORE attempting to send
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.EMAIL_FROM) {
+      const missing = [];
+      if (!process.env.EMAIL_USER) missing.push('EMAIL_USER');
+      if (!process.env.EMAIL_PASS) missing.push('EMAIL_PASS');
+      if (!process.env.EMAIL_FROM) missing.push('EMAIL_FROM');
+      throw new Error(`Email service not configured: Missing ${missing.join(', ')}`);
+    }
+
     const mailOptions = {
       from: process.env.EMAIL_FROM,
       to: email,
@@ -199,6 +231,7 @@ export const sendWelcomeEmail = async (email, firstName) => {
       html: htmlContent,
     };
 
+    console.log(`📧 Attempting to send welcome email to ${email}...`);
     const result = await transporter.sendMail(mailOptions);
     console.log(`✅ Welcome email sent to ${email}`);
     return result;
