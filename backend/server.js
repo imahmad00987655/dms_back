@@ -43,23 +43,28 @@ const defaultOrigins = [
   'http://localhost:3000'
 ];
 
-// Production frontend domain (fallback if env var not loaded)
+// Production frontend domain - ALWAYS ADDED (hardcoded for reliability)
 const productionFrontend = 'https://mediumslateblue-snake-987326.hostingersite.com';
 
-const extraOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-  : [productionFrontend]; // Add production domain as fallback
+// Get extra origins from env
+const envOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim()).filter(Boolean)
+  : [];
 
-// Always include production frontend domain
-if (!extraOrigins.includes(productionFrontend)) {
-  extraOrigins.push(productionFrontend);
-}
+// Combine all origins - production domain is always included
+const allowedOrigins = [
+  ...defaultOrigins,
+  ...envOrigins,
+  productionFrontend // Always include production domain
+].filter(Boolean);
 
-const allowedOrigins = [...defaultOrigins, ...extraOrigins].filter(Boolean);
+// Remove duplicates
+const uniqueOrigins = [...new Set(allowedOrigins)];
 
 // Log allowed origins on startup
-console.log('🌍 CORS Allowed Origins:', allowedOrigins);
+console.log('🌍 CORS Allowed Origins:', uniqueOrigins);
 console.log('🌍 CORS_ORIGIN env:', process.env.CORS_ORIGIN || 'Not set');
+console.log('🌍 Production Frontend (hardcoded):', productionFrontend);
 
 // Security middleware
 app.use(helmet({
@@ -81,12 +86,12 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    // Check if origin is in allowed list
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    // Use uniqueOrigins instead of allowedOrigins
+    if (uniqueOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       console.log('❌ CORS blocked origin:', origin);
-      console.log('✅ Allowed origins:', allowedOrigins);
+      console.log('✅ Allowed origins:', uniqueOrigins);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -152,9 +157,10 @@ app.get('/health', (req, res) => {
 // CORS debug endpoint - shows allowed origins
 app.get('/cors-info', (req, res) => {
   res.json({
-    allowedOrigins: allowedOrigins,
+    allowedOrigins: uniqueOrigins,
     requestOrigin: req.headers.origin || 'No origin header',
     corsOriginEnv: process.env.CORS_ORIGIN || 'Not set',
+    productionFrontend: productionFrontend,
     allEnvVars: {
       CORS_ORIGIN: process.env.CORS_ORIGIN,
       NODE_ENV: process.env.NODE_ENV,
@@ -162,7 +168,7 @@ app.get('/cors-info', (req, res) => {
       DB_HOST: process.env.DB_HOST,
       // Don't expose sensitive vars
     },
-    extraOrigins: extraOrigins,
+    envOrigins: envOrigins,
     defaultOrigins: defaultOrigins
   });
 });
