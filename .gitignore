@@ -1,0 +1,19 @@
+# Backend repository - ignore frontend folder
+frontend/
+
+# Backend specific ignores
+backend/node_modules/
+backend/.env
+backend/dist/
+backend/uploads/
+backend/*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
