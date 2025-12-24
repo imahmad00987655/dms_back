@@ -240,7 +240,10 @@ app.get('/health', (req, res) => {
     success: true,
     message: 'Server is running',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    version: '2.0.0-cors-fix-v3', // Version to verify latest code is deployed
+    productionFrontend: productionFrontend,
+    hasTopLevelCORS: true
   });
 });
 
@@ -264,10 +267,21 @@ app.get('/route-info', (req, res) => {
   });
 });
 
-// Test OPTIONS endpoint
+// Test OPTIONS endpoint - VERIFY DEPLOYMENT
 app.options('/test-cors', (req, res) => {
   const origin = req.headers.origin;
   console.log(`🧪 TEST CORS OPTIONS - Origin: ${origin}`);
+  console.log(`🧪 TEST CORS OPTIONS - This endpoint should work if code is deployed`);
+  
+  // Always allow production frontend
+  if (origin === 'https://mediumslateblue-snake-987326.hostingersite.com') {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return res.sendStatus(204);
+  }
+  
   res.header('Access-Control-Allow-Origin', origin || '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -278,9 +292,11 @@ app.options('/test-cors', (req, res) => {
 app.get('/test-cors', (req, res) => {
   res.json({
     success: true,
-    message: 'CORS test endpoint',
+    message: 'CORS test endpoint - Latest code deployed',
+    version: '2.0.0-cors-fix-v3',
     origin: req.headers.origin || 'No origin',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    productionFrontend: productionFrontend
   });
 });
 
