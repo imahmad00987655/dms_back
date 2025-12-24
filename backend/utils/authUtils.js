@@ -4,6 +4,10 @@ import crypto from 'crypto';
 
 // Generate JWT token
 export const generateToken = (userId, email, role) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET environment variable is not set. Please configure it in Hostinger environment variables.');
+  }
+  
   return jwt.sign(
     { 
       userId, 
@@ -20,6 +24,10 @@ export const generateToken = (userId, email, role) => {
 
 // Verify JWT token
 export const verifyToken = (token) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET environment variable is not set. Please configure it in Hostinger environment variables.');
+  }
+  
   return jwt.verify(token, process.env.JWT_SECRET);
 };
 
