@@ -140,9 +140,15 @@ export const rateLimit = (windowMs, maxRequests) => {
     const userRequests = requests.get(key);
 
     if (userRequests.length >= maxRequests) {
+      // Calculate when the oldest request in window will expire
+      const oldestRequest = Math.min(...userRequests);
+      const retryAfter = Math.ceil((oldestRequest + windowMs - now) / 1000); // seconds until retry
       return res.status(429).json({ 
         success: false, 
-        message: 'Too many requests, please try again later' 
+        message: 'Too many requests, please try again later',
+        retryAfter: retryAfter > 0 ? retryAfter : 0, // seconds until can retry
+        limit: maxRequests,
+        windowMinutes: Math.ceil(windowMs / 60000)
       });
     }
 

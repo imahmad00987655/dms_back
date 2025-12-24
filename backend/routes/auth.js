@@ -18,10 +18,10 @@ import { authenticateToken, rateLimit } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Rate limiting
-const loginRateLimit = rateLimit(15 * 60 * 1000, 5); // 5 attempts per 15 minutes
-const signupRateLimit = rateLimit(60 * 60 * 1000, 3); // 3 attempts per hour
-const otpRateLimit = rateLimit(5 * 60 * 1000, 3); // 3 attempts per 5 minutes
+// Rate limiting - More lenient for production
+const loginRateLimit = rateLimit(15 * 60 * 1000, 10); // 10 attempts per 15 minutes (increased from 5)
+const signupRateLimit = rateLimit(60 * 60 * 1000, 5); // 5 attempts per hour (increased from 3)
+const otpRateLimit = rateLimit(5 * 60 * 1000, 5); // 5 attempts per 5 minutes (increased from 3)
 
 // Login route
 router.post('/login', 
