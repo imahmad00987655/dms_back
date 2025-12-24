@@ -50,7 +50,16 @@ const extraOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
   : [productionFrontend]; // Add production domain as fallback
 
+// Always include production frontend domain
+if (!extraOrigins.includes(productionFrontend)) {
+  extraOrigins.push(productionFrontend);
+}
+
 const allowedOrigins = [...defaultOrigins, ...extraOrigins].filter(Boolean);
+
+// Log allowed origins on startup
+console.log('🌍 CORS Allowed Origins:', allowedOrigins);
+console.log('🌍 CORS_ORIGIN env:', process.env.CORS_ORIGIN || 'Not set');
 
 // Security middleware
 app.use(helmet({
