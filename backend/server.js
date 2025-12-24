@@ -470,10 +470,10 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
-// Test users table endpoint - check if users table exists and is accessible
+// Test users table endpoint - check if users table exists and has required columns
 app.get('/test-users', async (req, res) => {
   try {
-    console.log('Testing users table...');
+    console.log('Testing users table and required columns...');
     const mysql = await import('mysql2/promise');
     const { dbConfig } = await import('./config/database.js');
     
@@ -493,16 +493,38 @@ app.get('/test-users', async (req, res) => {
       });
     }
     
+    // Get all columns from users table
+    const [columns] = await connection.execute(
+      "SHOW COLUMNS FROM users"
+    );
+    
+    const columnNames = columns.map(col => col.Field);
+    
+    // Required columns for login
+    const requiredColumns = ['id', 'email', 'password_hash', 'role', 'is_active', 'is_verified', 'first_name', 'last_name'];
+    const missingColumns = requiredColumns.filter(col => !columnNames.includes(col));
+    
+    // Check if user_sessions table exists
+    const [sessionsTable] = await connection.execute(
+      "SHOW TABLES LIKE 'user_sessions'"
+    );
+    
     // Try to query users table
     const [users] = await connection.execute('SELECT COUNT(*) as count FROM users');
     
     await connection.end();
     
     res.json({
-      success: true,
-      message: 'Users table is accessible',
+      success: missingColumns.length === 0 && sessionsTable.length > 0,
+      message: missingColumns.length === 0 && sessionsTable.length > 0 
+        ? 'Users table is ready for login' 
+        : 'Users table has missing columns or user_sessions table missing',
       usersCount: users[0].count,
-      tableExists: true
+      tableExists: true,
+      columns: columnNames,
+      requiredColumns: requiredColumns,
+      missingColumns: missingColumns,
+      userSessionsTableExists: sessionsTable.length > 0
     });
   } catch (error) {
     console.error('Error testing users table:', error);
