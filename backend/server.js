@@ -43,9 +43,12 @@ const defaultOrigins = [
   'http://localhost:3000'
 ];
 
+// Production frontend domain (fallback if env var not loaded)
+const productionFrontend = 'https://mediumslateblue-snake-987326.hostingersite.com';
+
 const extraOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-  : [];
+  : [productionFrontend]; // Add production domain as fallback
 
 const allowedOrigins = [...defaultOrigins, ...extraOrigins].filter(Boolean);
 
