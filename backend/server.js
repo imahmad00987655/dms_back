@@ -65,10 +65,24 @@ app.use(helmet({
 
 // CORS configuration - supports local dev + production domains from env
 app.use(cors({
-  origin: allowedOrigins,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('❌ CORS blocked origin:', origin);
+      console.log('✅ Allowed origins:', allowedOrigins);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
 
 // Rate limiting
@@ -120,6 +134,15 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// CORS debug endpoint - shows allowed origins
+app.get('/cors-info', (req, res) => {
+  res.json({
+    allowedOrigins: allowedOrigins,
+    requestOrigin: req.headers.origin || 'No origin header',
+    corsOriginEnv: process.env.CORS_ORIGIN || 'Not set'
   });
 });
 
