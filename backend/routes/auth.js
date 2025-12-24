@@ -45,10 +45,27 @@ router.post('/login',
       const sanitizedEmail = sanitizeInput(email);
 
       // Check if user exists
-      const users = await executeQuery(
-        'SELECT id, email, password_hash, role, is_active, is_verified, first_name, last_name FROM users WHERE email = ?',
-        [sanitizedEmail]
-      );
+      // Note: If columns don't exist, this will throw an error - add missing columns to database
+      let users;
+      try {
+        users = await executeQuery(
+          'SELECT id, email, password_hash, role, is_active, is_verified, first_name, last_name FROM users WHERE email = ?',
+          [sanitizedEmail]
+        );
+      } catch (dbError) {
+        // If error is about unknown column, provide helpful message
+        if (dbError.message && dbError.message.includes('Unknown column')) {
+          console.error('❌ DATABASE COLUMN MISSING:', dbError.message);
+          return res.status(500).json({
+            success: false,
+            message: 'Database configuration error',
+            error: 'Missing required columns in users table',
+            details: 'Please add missing columns: role, is_active, is_verified to users table',
+            sqlError: dbError.message
+          });
+        }
+        throw dbError; // Re-throw if it's a different error
+      }
 
       if (users.length === 0) {
         await createAuditLog(executeQuery, null, 'LOGIN_FAILED', `Failed login attempt for email: ${sanitizedEmail}`, req.ip, req.get('User-Agent'));
@@ -60,7 +77,12 @@ router.post('/login',
 
       const user = users[0];
 
-      if (!user.is_active) {
+      // Handle missing columns gracefully (default values)
+      const userRole = user.role || 'user';
+      const isActive = user.is_active !== undefined ? user.is_active : true;
+      const isVerified = user.is_verified !== undefined ? user.is_verified : true;
+
+      if (!isActive) {
         await createAuditLog(executeQuery, user.id, 'LOGIN_FAILED', 'Account is deactivated', req.ip, req.get('User-Agent'));
         return res.status(401).json({
           success: false,
@@ -79,13 +101,22 @@ router.post('/login',
       }
 
       // Generate token
-      const token = generateToken(user.id, user.email, user.role);
+      const token = generateToken(user.id, user.email, userRole);
 
-      // Store session
-      await executeQuery(
-        'INSERT INTO user_sessions (user_id, token_hash, device_info, ip_address, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 7 DAY))',
-        [user.id, hashToken(token), req.get('User-Agent'), req.ip]
-      );
+      // Store session (handle if table doesn't exist)
+      try {
+        await executeQuery(
+          'INSERT INTO user_sessions (user_id, token_hash, device_info, ip_address, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 7 DAY))',
+          [user.id, hashToken(token), req.get('User-Agent'), req.ip]
+        );
+      } catch (sessionError) {
+        // If user_sessions table doesn't exist, log warning but don't fail login
+        if (sessionError.message && sessionError.message.includes("doesn't exist")) {
+          console.warn('⚠️ user_sessions table does not exist - session not stored');
+        } else {
+          throw sessionError; // Re-throw if it's a different error
+        }
+      }
 
       // Create audit log
       await createAuditLog(executeQuery, user.id, 'LOGIN_SUCCESS', 'User logged in successfully', req.ip, req.get('User-Agent'));
@@ -98,10 +129,10 @@ router.post('/login',
           user: {
             id: user.id,
             email: user.email,
-            role: user.role,
+            role: userRole,
             firstName: user.first_name,
             lastName: user.last_name,
-            isVerified: user.is_verified
+            isVerified: isVerified
           }
         }
       });
