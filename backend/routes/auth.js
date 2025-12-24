@@ -236,10 +236,10 @@ router.post('/signup',
       // Hash password
       const passwordHash = await hashPassword(password);
 
-      // Create user
+      // Create user (include default values for role, is_active, is_verified)
       const result = await executeQuery(
-        'INSERT INTO users (first_name, last_name, email, password_hash, company) VALUES (?, ?, ?, ?, ?)',
-        [sanitizedData.firstName, sanitizedData.lastName, sanitizedData.email, passwordHash, sanitizedData.company]
+        'INSERT INTO users (first_name, last_name, email, password_hash, company, role, is_active, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [sanitizedData.firstName, sanitizedData.lastName, sanitizedData.email, passwordHash, sanitizedData.company, 'user', true, false]
       );
 
       const userId = result.insertId;
@@ -264,10 +264,28 @@ router.post('/signup',
         message: 'Registration successful. Please check your email for verification code.'
       });
     } catch (error) {
-      console.error('Signup error:', error);
+      console.error('❌ SIGNUP ERROR:', error.message);
+      console.error('❌ SIGNUP ERROR STACK:', error.stack);
+      console.error('❌ SIGNUP ERROR DETAILS:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState,
+        name: error.name
+      });
+      
       res.status(500).json({
         success: false,
-        message: 'Server error'
+        message: 'Server error',
+        error: error.message || 'Internal server error',
+        errorCode: error.code || null,
+        hint: error.message?.includes('Unknown column')
+          ? 'Check database schema - missing columns'
+          : error.message?.includes("doesn't exist")
+          ? 'Check if required database tables exist (users, otps)'
+          : error.message?.includes('JWT_SECRET')
+          ? 'JWT_SECRET issue (should be fixed)'
+          : 'Check backend logs for more details'
       });
     }
   }
@@ -367,11 +385,24 @@ router.post('/forgot-password',
       const { email } = req.body;
       const sanitizedEmail = sanitizeInput(email);
 
-      // Check if user exists
-      const users = await executeQuery(
-        'SELECT id FROM users WHERE email = ? AND is_active = TRUE',
-        [sanitizedEmail]
-      );
+      // Check if user exists (handle missing is_active column gracefully)
+      let users;
+      try {
+        users = await executeQuery(
+          'SELECT id FROM users WHERE email = ? AND is_active = TRUE',
+          [sanitizedEmail]
+        );
+      } catch (dbError) {
+        // If is_active column doesn't exist, query without it
+        if (dbError.message && dbError.message.includes('Unknown column')) {
+          users = await executeQuery(
+            'SELECT id FROM users WHERE email = ?',
+            [sanitizedEmail]
+          );
+        } else {
+          throw dbError;
+        }
+      }
 
       if (users.length === 0) {
         // Don't reveal if email exists or not
@@ -391,14 +422,27 @@ router.post('/forgot-password',
         [sanitizedEmail, 'password_reset']
       );
 
-      // Insert new OTP
-      await executeQuery(
-        'INSERT INTO otps (email, otp_code, type, expires_at) VALUES (?, ?, ?, ?)',
-        [sanitizedEmail, otp, 'password_reset', expiresAt]
-      );
+      // Insert new OTP (handle if otps table doesn't exist)
+      try {
+        await executeQuery(
+          'INSERT INTO otps (email, otp_code, type, expires_at) VALUES (?, ?, ?, ?)',
+          [sanitizedEmail, otp, 'password_reset', expiresAt]
+        );
+      } catch (otpError) {
+        if (otpError.message && otpError.message.includes("doesn't exist")) {
+          console.warn('⚠️ otps table does not exist - OTP not stored');
+        } else {
+          throw otpError;
+        }
+      }
 
-      // Send OTP email
-      await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
+      // Send OTP email (handle if email service fails)
+      try {
+        await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
+      } catch (emailError) {
+        console.warn('⚠️ Failed to send OTP email:', emailError.message);
+        // Don't fail forgot-password if email fails
+      }
 
       // Create audit log
       await createAuditLog(executeQuery, users[0].id, 'PASSWORD_RESET_REQUESTED', 'Password reset requested', req.ip, req.get('User-Agent'));
@@ -408,10 +452,28 @@ router.post('/forgot-password',
         message: 'If the email exists, a reset code has been sent'
       });
     } catch (error) {
-      console.error('Forgot password error:', error);
+      console.error('❌ FORGOT PASSWORD ERROR:', error.message);
+      console.error('❌ FORGOT PASSWORD ERROR STACK:', error.stack);
+      console.error('❌ FORGOT PASSWORD ERROR DETAILS:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState,
+        name: error.name
+      });
+      
       res.status(500).json({
         success: false,
-        message: 'Server error'
+        message: 'Server error',
+        error: error.message || 'Internal server error',
+        errorCode: error.code || null,
+        hint: error.message?.includes('Unknown column')
+          ? 'Check database schema - missing columns'
+          : error.message?.includes("doesn't exist")
+          ? 'Check if required database tables exist (users, otps)'
+          : error.message?.includes('email')
+          ? 'Email service might not be configured'
+          : 'Check backend logs for more details'
       });
     }
   }
