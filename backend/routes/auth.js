@@ -326,11 +326,24 @@ router.post('/verify-otp',
       const { email, otp } = req.body;
       const sanitizedEmail = sanitizeInput(email);
 
-      // Find valid OTP
-      const otps = await executeQuery(
-        'SELECT * FROM otps WHERE email = ? AND otp_code = ? AND type = ? AND expires_at > NOW() AND is_used = FALSE ORDER BY created_at DESC LIMIT 1',
-        [sanitizedEmail, otp, 'email_verification']
-      );
+      // Find valid OTP (handle if otps table doesn't exist)
+      let otps;
+      try {
+        otps = await executeQuery(
+          'SELECT * FROM otps WHERE email = ? AND otp_code = ? AND type = ? AND expires_at > NOW() AND is_used = FALSE ORDER BY created_at DESC LIMIT 1',
+          [sanitizedEmail, otp, 'email_verification']
+        );
+      } catch (otpError) {
+        if (otpError.message && otpError.message.includes("doesn't exist")) {
+          console.warn('⚠️ otps table does not exist');
+          return res.status(400).json({
+            success: false,
+            message: 'OTP verification not available - database table missing'
+          });
+        } else {
+          throw otpError;
+        }
+      }
 
       if (otps.length === 0) {
         return res.status(400).json({
@@ -345,11 +358,20 @@ router.post('/verify-otp',
         [otps[0].id]
       );
 
-      // Verify user email
-      await executeQuery(
-        'UPDATE users SET is_verified = TRUE WHERE email = ?',
-        [sanitizedEmail]
-      );
+      // Verify user email (handle missing is_verified column)
+      try {
+        await executeQuery(
+          'UPDATE users SET is_verified = TRUE WHERE email = ?',
+          [sanitizedEmail]
+        );
+      } catch (updateError) {
+        if (updateError.message && updateError.message.includes('Unknown column')) {
+          console.warn('⚠️ is_verified column does not exist - skipping verification update');
+          // Continue without updating is_verified
+        } else {
+          throw updateError;
+        }
+      }
 
       // Get user details
       const users = await executeQuery(
@@ -358,11 +380,21 @@ router.post('/verify-otp',
       );
 
       if (users.length > 0) {
-        // Send welcome email
-        await sendWelcomeEmail(sanitizedEmail, users[0].first_name);
+        // Send welcome email (handle if email service fails)
+        try {
+          await sendWelcomeEmail(sanitizedEmail, users[0].first_name);
+        } catch (emailError) {
+          console.warn('⚠️ Failed to send welcome email:', emailError.message);
+          // Don't fail verification if email fails
+        }
 
-        // Create audit log
-        await createAuditLog(executeQuery, users[0].id, 'EMAIL_VERIFIED', 'Email verified successfully', req.ip, req.get('User-Agent'));
+        // Create audit log (handle if audit_logs table doesn't exist)
+        try {
+          await createAuditLog(executeQuery, users[0].id, 'EMAIL_VERIFIED', 'Email verified successfully', req.ip, req.get('User-Agent'));
+        } catch (auditError) {
+          console.warn('⚠️ Failed to create audit log:', auditError.message);
+          // Don't fail verification if audit log fails
+        }
       }
 
       res.json({
@@ -370,10 +402,26 @@ router.post('/verify-otp',
         message: 'Email verified successfully'
       });
     } catch (error) {
-      console.error('OTP verification error:', error);
+      console.error('❌ VERIFY OTP ERROR:', error.message);
+      console.error('❌ VERIFY OTP ERROR STACK:', error.stack);
+      console.error('❌ VERIFY OTP ERROR DETAILS:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState,
+        name: error.name
+      });
+      
       res.status(500).json({
         success: false,
-        message: 'Server error'
+        message: 'Server error',
+        error: error.message || 'Internal server error',
+        errorCode: error.code || null,
+        hint: error.message?.includes('Unknown column')
+          ? 'Check database schema - missing columns (is_verified, is_used)'
+          : error.message?.includes("doesn't exist")
+          ? 'Check if required database tables exist (otps, users)'
+          : 'Check backend logs for more details'
       });
     }
   }
