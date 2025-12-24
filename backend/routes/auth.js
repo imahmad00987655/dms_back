@@ -107,9 +107,24 @@ router.post('/login',
       });
     } catch (error) {
       console.error('Login error:', error);
+      console.error('Login error stack:', error.stack);
+      console.error('Login error details:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState
+      });
       res.status(500).json({
         success: false,
-        message: 'Server error'
+        message: 'Server error',
+        error: process.env.NODE_ENV === 'production' 
+          ? 'Internal server error. Please check server logs.' 
+          : error.message,
+        details: process.env.NODE_ENV === 'development' ? {
+          message: error.message,
+          code: error.code,
+          stack: error.stack
+        } : undefined
       });
     }
   }
