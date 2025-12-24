@@ -106,25 +106,25 @@ router.post('/login',
         }
       });
     } catch (error) {
-      console.error('Login error:', error);
-      console.error('Login error stack:', error.stack);
-      console.error('Login error details:', {
+      // Detailed error logging
+      console.error('❌ LOGIN ERROR:', error.message);
+      console.error('❌ LOGIN ERROR STACK:', error.stack);
+      console.error('❌ LOGIN ERROR DETAILS:', {
         message: error.message,
         code: error.code,
         errno: error.errno,
-        sqlState: error.sqlState
+        sqlState: error.sqlState,
+        name: error.name
       });
+      
+      // Return error details (safe for production - no sensitive data)
       res.status(500).json({
         success: false,
         message: 'Server error',
-        error: process.env.NODE_ENV === 'production' 
-          ? 'Internal server error. Please check server logs.' 
-          : error.message,
-        details: process.env.NODE_ENV === 'development' ? {
-          message: error.message,
-          code: error.code,
-          stack: error.stack
-        } : undefined
+        error: error.message || 'Internal server error',
+        errorCode: error.code || null,
+        // Only include stack in development
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
       });
     }
   }

@@ -470,6 +470,52 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
+// Test users table endpoint - check if users table exists and is accessible
+app.get('/test-users', async (req, res) => {
+  try {
+    console.log('Testing users table...');
+    const mysql = await import('mysql2/promise');
+    const { dbConfig } = await import('./config/database.js');
+    
+    const connection = await mysql.default.createConnection(dbConfig);
+    
+    // Check if users table exists
+    const [tables] = await connection.execute(
+      "SHOW TABLES LIKE 'users'"
+    );
+    
+    if (tables.length === 0) {
+      await connection.end();
+      return res.status(500).json({
+        success: false,
+        error: 'Users table does not exist',
+        message: 'Please import the database schema'
+      });
+    }
+    
+    // Try to query users table
+    const [users] = await connection.execute('SELECT COUNT(*) as count FROM users');
+    
+    await connection.end();
+    
+    res.json({
+      success: true,
+      message: 'Users table is accessible',
+      usersCount: users[0].count,
+      tableExists: true
+    });
+  } catch (error) {
+    console.error('Error testing users table:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to test users table',
+      details: error.message,
+      code: error.code,
+      errno: error.errno
+    });
+  }
+});
+
 // Test suppliers endpoint
 app.get('/test-suppliers', async (req, res) => {
   try {
