@@ -192,6 +192,26 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Route info endpoint for debugging
+app.get('/route-info', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Routes are registered',
+    availableRoutes: [
+      '/api/auth/login (POST)',
+      '/api/auth/register (POST)',
+      '/api/auth/verify-otp (POST)',
+      '/health (GET)',
+      '/cors-info (GET)',
+      '/test-db (GET)',
+      '/debug-db (GET)'
+    ],
+    requestPath: req.path,
+    requestMethod: req.method,
+    baseUrl: req.baseUrl
+  });
+});
+
 // CORS debug endpoint - shows allowed origins
 app.get('/cors-info', (req, res) => {
   res.json({
