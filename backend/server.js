@@ -77,6 +77,12 @@ app.use(cors({
       return callback(null, true);
     }
     
+    // CRITICAL: Always allow production frontend domain (hardcoded fallback)
+    if (origin === productionFrontend) {
+      console.log(`✅ CORS: Production frontend ${origin} allowed (hardcoded)`);
+      return callback(null, true);
+    }
+    
     // Check if origin is in allowed list
     if (uniqueOrigins.indexOf(origin) !== -1) {
       console.log(`✅ CORS: Origin ${origin} is allowed`);
@@ -84,6 +90,7 @@ app.use(cors({
     } else {
       console.log(`❌ CORS: Origin ${origin} is NOT in allowed list`);
       console.log(`📋 Allowed origins: ${uniqueOrigins.join(', ')}`);
+      console.log(`📋 Production frontend (hardcoded): ${productionFrontend}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -101,7 +108,12 @@ app.options('*', (req, res) => {
   const origin = req.headers.origin;
   console.log(`🔧 Manual OPTIONS handler - Origin: ${origin || 'No origin'}`);
   
-  if (!origin || uniqueOrigins.indexOf(origin) !== -1) {
+  // Always allow production frontend or if origin is in allowed list
+  const isAllowed = !origin || 
+                    origin === productionFrontend || 
+                    uniqueOrigins.indexOf(origin) !== -1;
+  
+  if (isAllowed) {
     res.header('Access-Control-Allow-Origin', origin || '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
@@ -109,6 +121,7 @@ app.options('*', (req, res) => {
     res.header('Access-Control-Max-Age', '86400');
     res.sendStatus(204);
   } else {
+    console.log(`❌ OPTIONS: Origin ${origin} not allowed`);
     res.status(403).json({ error: 'CORS not allowed' });
   }
 });
