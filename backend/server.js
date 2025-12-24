@@ -495,6 +495,19 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
+// Test JWT_SECRET endpoint
+app.get('/test-jwt', (req, res) => {
+  const jwtSecret = process.env.JWT_SECRET;
+  res.json({
+    success: !!jwtSecret,
+    message: jwtSecret ? 'JWT_SECRET is configured' : 'JWT_SECRET is missing',
+    jwtSecretSet: !!jwtSecret,
+    jwtSecretLength: jwtSecret ? jwtSecret.length : 0,
+    // Don't expose the actual secret
+    hint: jwtSecret ? `Secret is ${jwtSecret.length} characters long` : 'Please set JWT_SECRET in environment variables'
+  });
+});
+
 // Test users table endpoint - check if users table exists and has required columns
 app.get('/test-users', async (req, res) => {
   try {
