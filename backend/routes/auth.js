@@ -248,13 +248,27 @@ router.post('/signup',
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-      await executeQuery(
-        'INSERT INTO otps (email, otp_code, type, expires_at) VALUES (?, ?, ?, ?)',
-        [sanitizedData.email, otp, 'email_verification', expiresAt]
-      );
+      // Insert OTP (handle if otps table doesn't exist)
+      try {
+        await executeQuery(
+          'INSERT INTO otps (email, otp_code, type, expires_at) VALUES (?, ?, ?, ?)',
+          [sanitizedData.email, otp, 'email_verification', expiresAt]
+        );
+      } catch (otpError) {
+        if (otpError.message && otpError.message.includes("doesn't exist")) {
+          console.warn('⚠️ otps table does not exist - OTP not stored');
+        } else {
+          throw otpError;
+        }
+      }
 
-      // Send OTP email
-      await sendOTPEmail(sanitizedData.email, otp, 'email_verification');
+      // Send OTP email (handle if email service fails)
+      try {
+        await sendOTPEmail(sanitizedData.email, otp, 'email_verification');
+      } catch (emailError) {
+        console.warn('⚠️ Failed to send OTP email:', emailError.message);
+        // Don't fail signup if email fails - user can request OTP again
+      }
 
       // Create audit log
       await createAuditLog(executeQuery, userId, 'SIGNUP_SUCCESS', 'User registered successfully', req.ip, req.get('User-Agent'));
