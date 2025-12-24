@@ -241,9 +241,34 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    version: '2.0.0-cors-fix-v3', // Version to verify latest code is deployed
+    version: '2.0.0-cors-fix-v4', // Version to verify latest code is deployed
     productionFrontend: productionFrontend,
-    hasTopLevelCORS: true
+    hasTopLevelCORS: true,
+    gitCommit: '43939ae', // Latest commit hash
+    deployedAt: '2025-12-24T06:40:00Z'
+  });
+});
+
+// Deployment verification endpoint
+app.get('/deployment-info', (req, res) => {
+  res.json({
+    version: '2.0.0-cors-fix-v4',
+    gitCommit: '43939ae',
+    features: {
+      topLevelCORS: true,
+      explicitOPTIONSHandler: true,
+      productionFrontendHardcoded: true,
+      testUsersEndpoint: true,
+      improvedErrorLogging: true
+    },
+    endpoints: {
+      health: '/health',
+      corsInfo: '/cors-info',
+      testDb: '/test-db',
+      testUsers: '/test-users',
+      routeInfo: '/route-info'
+    },
+    timestamp: new Date().toISOString()
   });
 });
 
