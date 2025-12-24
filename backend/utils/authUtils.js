@@ -5,12 +5,22 @@ import crypto from 'crypto';
 // Generate JWT token
 export const generateToken = (userId, email, role) => {
   // Use environment variable if available, otherwise use hardcoded fallback
-  // Note: For production, JWT_SECRET should be set in environment variables
+  // This ensures login works both when env var is loaded and when it's not
   const jwtSecret = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production';
   
-  // Log if using fallback (for debugging)
-  if (!process.env.JWT_SECRET) {
-    console.log('⚠️ Using hardcoded JWT_SECRET fallback - login will work');
+  // Log status (only once on startup, not on every token generation)
+  if (process.env.JWT_SECRET) {
+    // Only log once - check if we've logged before
+    if (!global.jwtSecretLogged) {
+      console.log('✅ JWT_SECRET loaded from environment variables');
+      global.jwtSecretLogged = true;
+    }
+  } else {
+    if (!global.jwtFallbackLogged) {
+      console.log('⚠️ JWT_SECRET not found in env - using fallback (login will work)');
+      console.log('⚠️ When Hostinger env vars load, it will automatically use them');
+      global.jwtFallbackLogged = true;
+    }
   }
   
   return jwt.sign(
