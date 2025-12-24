@@ -4,21 +4,9 @@ import crypto from 'crypto';
 
 // Generate JWT token
 export const generateToken = (userId, email, role) => {
-  // Try to get JWT_SECRET from environment
-  let jwtSecret = process.env.JWT_SECRET;
-  
-  // If not found, try alternative names (Hostinger might use different naming)
-  if (!jwtSecret) {
-    jwtSecret = process.env.JWT_SECRET_KEY || 
-                process.env.JWTKEY || 
-                process.env.SECRET ||
-                'your-super-secret-jwt-key-change-this-in-production'; // Fallback for testing
-  }
-  
-  if (!jwtSecret || jwtSecret === 'your-super-secret-jwt-key-change-this-in-production') {
-    console.error('⚠️ WARNING: Using default JWT_SECRET. This is insecure for production!');
-    console.error('⚠️ Please set JWT_SECRET in Hostinger environment variables.');
-  }
+  // Use environment variable if available, otherwise use hardcoded fallback
+  // Note: For production, JWT_SECRET should be set in environment variables
+  const jwtSecret = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production';
   
   return jwt.sign(
     { 
@@ -36,16 +24,9 @@ export const generateToken = (userId, email, role) => {
 
 // Verify JWT token
 export const verifyToken = (token) => {
-  // Try to get JWT_SECRET from environment
-  let jwtSecret = process.env.JWT_SECRET;
-  
-  // If not found, try alternative names
-  if (!jwtSecret) {
-    jwtSecret = process.env.JWT_SECRET_KEY || 
-                process.env.JWTKEY || 
-                process.env.SECRET ||
-                'your-super-secret-jwt-key-change-this-in-production'; // Fallback for testing
-  }
+  // Use environment variable if available, otherwise use hardcoded fallback
+  // Note: For production, JWT_SECRET should be set in environment variables
+  const jwtSecret = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production';
   
   return jwt.verify(token, jwtSecret);
 };

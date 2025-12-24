@@ -507,37 +507,22 @@ app.get('/test-jwt', (req, res) => {
   // Reload environment variables
   dotenv.config();
   
-  // Check for JWT_SECRET (same logic as generateToken)
-  let jwtSecret = process.env.JWT_SECRET;
-  const usingFallback = !jwtSecret;
-  
-  // If not found, use fallback (same as in authUtils.js)
-  if (!jwtSecret) {
-    jwtSecret = process.env.JWT_SECRET_KEY || 
-                process.env.JWTKEY || 
-                process.env.SECRET ||
-                'your-super-secret-jwt-key-change-this-in-production'; // Fallback
-  }
-  
-  const allEnvKeys = Object.keys(process.env).filter(key => key.includes('JWT') || key.includes('SECRET'));
+  // Use same logic as generateToken - hardcoded fallback
+  const jwtSecret = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production';
+  const usingFallback = !process.env.JWT_SECRET;
   
   res.json({
-    success: true, // Always true now because we have fallback
+    success: true, // Always true - using hardcoded fallback
     message: usingFallback 
-      ? 'JWT_SECRET using fallback (login will work, but please set env var for production)' 
+      ? 'JWT_SECRET using hardcoded fallback (login will work)' 
       : 'JWT_SECRET is configured from environment',
-    jwtSecretSet: !!process.env.JWT_SECRET, // Original env var status
+    jwtSecretSet: !!process.env.JWT_SECRET,
     usingFallback: usingFallback,
-    jwtSecretLength: jwtSecret ? jwtSecret.length : 0,
-    // Don't expose the actual secret
+    jwtSecretLength: jwtSecret.length,
     hint: usingFallback 
-      ? 'Using fallback JWT_SECRET - login will work but set env var for production security'
-      : `Secret is ${jwtSecret.length} characters long`,
-    // Debug info
-    nodeEnv: process.env.NODE_ENV,
-    allJwtRelatedKeys: allEnvKeys,
-    // Check if dotenv loaded anything
-    dotenvLoaded: !!process.env.DB_HOST || !!process.env.DB_USER
+      ? 'Using hardcoded JWT_SECRET - login will work. Contact Hostinger support to fix environment variables.'
+      : `JWT_SECRET loaded from environment (${jwtSecret.length} chars)`,
+    nodeEnv: process.env.NODE_ENV
   });
 });
 
