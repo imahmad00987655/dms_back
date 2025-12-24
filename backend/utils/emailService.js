@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // Create transporter using environment variables so it works locally and on Hostinger
+// Enhanced configuration for Hostinger compatibility
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST || 'smtp.gmail.com',
   port: Number(process.env.EMAIL_PORT) || 587,
@@ -12,16 +13,56 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  // Enhanced TLS options for Hostinger
+  tls: {
+    rejectUnauthorized: false, // Allow self-signed certificates (sometimes needed on shared hosting)
+    ciphers: 'SSLv3'
+  },
+  // Connection timeout
+  connectionTimeout: 10000, // 10 seconds
+  // Greeting timeout
+  greetingTimeout: 10000,
+  // Socket timeout
+  socketTimeout: 10000,
+  // Debug mode (set to true for detailed logs)
+  debug: process.env.NODE_ENV === 'development',
+  logger: process.env.NODE_ENV === 'development'
 });
 
 // Verify transporter configuration
 export const verifyEmailConfig = async () => {
   try {
+    console.log('🔍 Checking email configuration...');
+    console.log('  EMAIL_HOST:', process.env.EMAIL_HOST || 'not set (using default: smtp.gmail.com)');
+    console.log('  EMAIL_PORT:', process.env.EMAIL_PORT || 'not set (using default: 587)');
+    console.log('  EMAIL_USER:', process.env.EMAIL_USER ? `${process.env.EMAIL_USER.substring(0, 3)}***` : '❌ NOT SET');
+    console.log('  EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET');
+    console.log('  EMAIL_FROM:', process.env.EMAIL_FROM || '❌ NOT SET');
+    
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      console.error('❌ Email credentials missing - EMAIL_USER or EMAIL_PASS not set');
+      return false;
+    }
+    
     await transporter.verify();
-    console.log('✅ Email service configured successfully');
+    console.log('✅ Email service configured successfully - SMTP connection verified');
     return true;
   } catch (error) {
-    console.error('❌ Email service configuration failed:', error.message);
+    console.error('❌ Email service configuration failed:');
+    console.error('  Error message:', error.message);
+    console.error('  Error code:', error.code);
+    console.error('  Error command:', error.command);
+    console.error('  Full error:', error);
+    
+    // Common error messages and solutions
+    if (error.message.includes('Invalid login')) {
+      console.error('  💡 Solution: Check EMAIL_USER and EMAIL_PASS - credentials might be incorrect');
+    } else if (error.message.includes('ECONNREFUSED') || error.message.includes('ETIMEDOUT')) {
+      console.error('  💡 Solution: Check EMAIL_HOST and EMAIL_PORT - SMTP server might be unreachable or port blocked');
+    } else if (error.message.includes('self signed certificate')) {
+      console.error('  💡 Solution: TLS certificate issue - might need to allow self-signed certs');
+    }
+    
     return false;
   }
 };
@@ -76,11 +117,31 @@ export const sendOTPEmail = async (email, otp, type = 'verification') => {
       html: htmlContent,
     };
 
+    console.log(`📧 Attempting to send OTP email to ${email}...`);
+    console.log(`  From: ${process.env.EMAIL_FROM || 'NOT SET'}`);
+    console.log(`  Subject: ${subject}`);
+    
     const result = await transporter.sendMail(mailOptions);
-    console.log(`✅ OTP email sent to ${email}`);
+    console.log(`✅ OTP email sent successfully to ${email}`);
+    console.log(`  Message ID: ${result.messageId}`);
+    console.log(`  Response: ${result.response}`);
     return result;
   } catch (error) {
-    console.error('❌ Failed to send OTP email:', error.message);
+    console.error('❌ Failed to send OTP email:');
+    console.error('  To:', email);
+    console.error('  Error message:', error.message);
+    console.error('  Error code:', error.code);
+    console.error('  Error command:', error.command);
+    console.error('  Full error:', error);
+    
+    // More detailed error information
+    if (error.response) {
+      console.error('  SMTP Response:', error.response);
+    }
+    if (error.responseCode) {
+      console.error('  SMTP Response Code:', error.responseCode);
+    }
+    
     throw new Error(`Failed to send email: ${error.message}`);
   }
 };

@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { testConnection } from './config/database.js';
-import { verifyEmailConfig } from './utils/emailService.js';
+import { verifyEmailConfig, sendOTPEmail } from './utils/emailService.js';
 import authRoutes from './routes/auth.js';
 import journalEntryRoutes from './routes/journalEntries.js';
 import inventoryItemsRoutes from './routes/inventoryItems.js';
