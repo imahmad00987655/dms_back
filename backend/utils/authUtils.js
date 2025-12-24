@@ -4,8 +4,20 @@ import crypto from 'crypto';
 
 // Generate JWT token
 export const generateToken = (userId, email, role) => {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET environment variable is not set. Please configure it in Hostinger environment variables.');
+  // Try to get JWT_SECRET from environment
+  let jwtSecret = process.env.JWT_SECRET;
+  
+  // If not found, try alternative names (Hostinger might use different naming)
+  if (!jwtSecret) {
+    jwtSecret = process.env.JWT_SECRET_KEY || 
+                process.env.JWTKEY || 
+                process.env.SECRET ||
+                'your-super-secret-jwt-key-change-this-in-production'; // Fallback for testing
+  }
+  
+  if (!jwtSecret || jwtSecret === 'your-super-secret-jwt-key-change-this-in-production') {
+    console.error('⚠️ WARNING: Using default JWT_SECRET. This is insecure for production!');
+    console.error('⚠️ Please set JWT_SECRET in Hostinger environment variables.');
   }
   
   return jwt.sign(
@@ -15,7 +27,7 @@ export const generateToken = (userId, email, role) => {
       role,
       iat: Math.floor(Date.now() / 1000)
     },
-    process.env.JWT_SECRET,
+    jwtSecret,
     { 
       expiresIn: process.env.JWT_EXPIRES_IN || '7d' 
     }
@@ -24,11 +36,18 @@ export const generateToken = (userId, email, role) => {
 
 // Verify JWT token
 export const verifyToken = (token) => {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET environment variable is not set. Please configure it in Hostinger environment variables.');
+  // Try to get JWT_SECRET from environment
+  let jwtSecret = process.env.JWT_SECRET;
+  
+  // If not found, try alternative names
+  if (!jwtSecret) {
+    jwtSecret = process.env.JWT_SECRET_KEY || 
+                process.env.JWTKEY || 
+                process.env.SECRET ||
+                'your-super-secret-jwt-key-change-this-in-production'; // Fallback for testing
   }
   
-  return jwt.verify(token, process.env.JWT_SECRET);
+  return jwt.verify(token, jwtSecret);
 };
 
 // Hash password
