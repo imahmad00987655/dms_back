@@ -149,11 +149,21 @@ router.post('/login',
       });
       
       // Return error details (safe for production - no sensitive data)
+      // Always return error message in production for debugging
       res.status(500).json({
         success: false,
         message: 'Server error',
         error: error.message || 'Internal server error',
         errorCode: error.code || null,
+        errorName: error.name || null,
+        // Include helpful details
+        hint: error.message?.includes('JWT_SECRET') 
+          ? 'Check JWT_SECRET in environment variables'
+          : error.message?.includes('Unknown column')
+          ? 'Check database schema - missing columns'
+          : error.message?.includes("doesn't exist")
+          ? 'Check if required database tables exist'
+          : 'Check backend logs for more details',
         // Only include stack in development
         ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
       });
