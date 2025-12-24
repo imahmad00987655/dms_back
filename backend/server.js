@@ -66,6 +66,30 @@ console.log('🌍 CORS Allowed Origins:', uniqueOrigins);
 console.log('🌍 CORS_ORIGIN env:', process.env.CORS_ORIGIN || 'Not set');
 console.log('🌍 Production Frontend (hardcoded):', productionFrontend);
 
+// CRITICAL: Handle OPTIONS preflight requests FIRST (before CORS middleware)
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  console.log(`🚀 PREFLIGHT OPTIONS - Origin: ${origin || 'No origin'}`);
+  
+  // Always allow production frontend
+  const isAllowed = !origin || 
+                    origin === productionFrontend || 
+                    uniqueOrigins.indexOf(origin) !== -1;
+  
+  if (isAllowed) {
+    console.log(`✅ PREFLIGHT: Allowing ${origin || 'no-origin'}`);
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.sendStatus(204);
+  } else {
+    console.log(`❌ PREFLIGHT: Blocking ${origin}`);
+    return res.status(403).json({ error: 'CORS not allowed' });
+  }
+});
+
 // CORS configuration - MUST BE BEFORE HELMET to avoid header conflicts
 app.use(cors({
   origin: function (origin, callback) {
@@ -103,30 +127,21 @@ app.use(cors({
   maxAge: 86400 // 24 hours
 }));
 
-// Manual OPTIONS handler as backup (before other routes)
-app.options('*', (req, res) => {
+// Final CORS headers fallback - ensures headers are always set
+app.use((req, res, next) => {
   const origin = req.headers.origin;
-  console.log(`🔧 Manual OPTIONS handler - Origin: ${origin || 'No origin'}`);
-  
-  // Always allow production frontend or if origin is in allowed list
   const isAllowed = !origin || 
                     origin === productionFrontend || 
                     uniqueOrigins.indexOf(origin) !== -1;
   
-  if (isAllowed) {
-    res.header('Access-Control-Allow-Origin', origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  if (isAllowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
-    res.sendStatus(204);
-  } else {
-    console.log(`❌ OPTIONS: Origin ${origin} not allowed`);
-    res.status(403).json({ error: 'CORS not allowed' });
   }
+  next();
 });
 
-// Security middleware (after CORS)
+// Security middleware (after CORS) - DISABLE CORS-related features to avoid conflicts
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -136,8 +151,9 @@ app.use(helmet({
       imgSrc: ["'self'", "data:", "https:", ...uniqueOrigins],
     },
   },
-  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin requests for resources
+  crossOriginResourcePolicy: false, // DISABLED - Let CORS middleware handle it
   crossOriginEmbedderPolicy: false, // Disable to allow embedding resources from different origins
+  crossOriginOpenerPolicy: false, // Disable to avoid CORS conflicts
 }));
 
 // Rate limiting
