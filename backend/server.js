@@ -142,7 +142,16 @@ app.get('/cors-info', (req, res) => {
   res.json({
     allowedOrigins: allowedOrigins,
     requestOrigin: req.headers.origin || 'No origin header',
-    corsOriginEnv: process.env.CORS_ORIGIN || 'Not set'
+    corsOriginEnv: process.env.CORS_ORIGIN || 'Not set',
+    allEnvVars: {
+      CORS_ORIGIN: process.env.CORS_ORIGIN,
+      NODE_ENV: process.env.NODE_ENV,
+      PORT: process.env.PORT,
+      DB_HOST: process.env.DB_HOST,
+      // Don't expose sensitive vars
+    },
+    extraOrigins: extraOrigins,
+    defaultOrigins: defaultOrigins
   });
 });
 
