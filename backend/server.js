@@ -35,6 +35,28 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// CRITICAL: Add CORS headers to ALL requests FIRST (before anything else)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  console.log(`🌐 ALL REQUESTS - Method: ${req.method}, Path: ${req.path}, Origin: ${origin || 'No origin'}`);
+  
+  // Always allow production frontend
+  if (origin === 'https://mediumslateblue-snake-987326.hostingersite.com') {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    
+    // Handle OPTIONS preflight immediately
+    if (req.method === 'OPTIONS') {
+      console.log(`✅ OPTIONS preflight handled at top level for ${origin}`);
+      return res.sendStatus(204);
+    }
+  }
+  
+  next();
+});
+
 // Build allowed origins list from env + local defaults
 const defaultOrigins = [
   'http://localhost:5173',
@@ -76,8 +98,20 @@ console.log('🌍 Production Frontend (hardcoded):', productionFrontend);
 app.options('*', (req, res) => {
   const origin = req.headers.origin;
   console.log(`🚀 PREFLIGHT OPTIONS - Origin: ${origin || 'No origin'}`);
+  console.log(`🚀 PREFLIGHT OPTIONS - Path: ${req.path}`);
   
-  // Always allow production frontend
+  // CRITICAL: Always allow production frontend (hardcoded check)
+  if (origin === 'https://mediumslateblue-snake-987326.hostingersite.com') {
+    console.log(`✅ PREFLIGHT: Production frontend allowed (hardcoded)`);
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.sendStatus(204);
+  }
+  
+  // Allow other origins from list
   const isAllowed = !origin || 
                     origin === productionFrontend || 
                     uniqueOrigins.indexOf(origin) !== -1;
@@ -227,6 +261,26 @@ app.get('/route-info', (req, res) => {
     requestPath: req.path,
     requestMethod: req.method,
     baseUrl: req.baseUrl
+  });
+});
+
+// Test OPTIONS endpoint
+app.options('/test-cors', (req, res) => {
+  const origin = req.headers.origin;
+  console.log(`🧪 TEST CORS OPTIONS - Origin: ${origin}`);
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(204);
+});
+
+app.get('/test-cors', (req, res) => {
+  res.json({
+    success: true,
+    message: 'CORS test endpoint',
+    origin: req.headers.origin || 'No origin',
+    timestamp: new Date().toISOString()
   });
 });
 
