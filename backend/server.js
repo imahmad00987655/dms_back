@@ -502,6 +502,84 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
+// Test email configuration endpoint
+app.get('/test-email', async (req, res) => {
+  try {
+    const email = req.query.email || process.env.EMAIL_USER;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address required. Use ?email=your@email.com',
+        config: {
+          EMAIL_HOST: process.env.EMAIL_HOST || 'not set (default: smtp.gmail.com)',
+          EMAIL_PORT: process.env.EMAIL_PORT || 'not set (default: 587)',
+          EMAIL_USER: process.env.EMAIL_USER ? `${process.env.EMAIL_USER.substring(0, 3)}***` : '❌ NOT SET',
+          EMAIL_PASS: process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET',
+          EMAIL_FROM: process.env.EMAIL_FROM || '❌ NOT SET'
+        }
+      });
+    }
+
+    console.log(`📧 Testing email to: ${email}`);
+    
+    // First verify configuration
+    const configOk = await verifyEmailConfig();
+    
+    if (!configOk) {
+      return res.status(500).json({
+        success: false,
+        message: 'Email configuration failed',
+        config: {
+          EMAIL_HOST: process.env.EMAIL_HOST || 'not set',
+          EMAIL_PORT: process.env.EMAIL_PORT || 'not set',
+          EMAIL_USER: process.env.EMAIL_USER ? '✅ Set' : '❌ NOT SET',
+          EMAIL_PASS: process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET',
+          EMAIL_FROM: process.env.EMAIL_FROM || '❌ NOT SET'
+        },
+        hint: 'Check environment variables in Hostinger dashboard'
+      });
+    }
+
+    // Try to send a test email
+    const testOTP = '123456';
+    await sendOTPEmail(email, testOTP, 'email_verification');
+    
+    res.json({
+      success: true,
+      message: `Test email sent successfully to ${email}`,
+      config: {
+        EMAIL_HOST: process.env.EMAIL_HOST || 'not set',
+        EMAIL_PORT: process.env.EMAIL_PORT || 'not set',
+        EMAIL_USER: process.env.EMAIL_USER ? `${process.env.EMAIL_USER.substring(0, 3)}***` : '❌ NOT SET',
+        EMAIL_PASS: process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET',
+        EMAIL_FROM: process.env.EMAIL_FROM || '❌ NOT SET'
+      },
+      note: 'Check your email inbox (and spam folder) for the test OTP: 123456'
+    });
+  } catch (error) {
+    console.error('❌ Test email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test email',
+      error: error.message,
+      errorCode: error.code,
+      config: {
+        EMAIL_HOST: process.env.EMAIL_HOST || 'not set',
+        EMAIL_PORT: process.env.EMAIL_PORT || 'not set',
+        EMAIL_USER: process.env.EMAIL_USER ? '✅ Set' : '❌ NOT SET',
+        EMAIL_PASS: process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET',
+        EMAIL_FROM: process.env.EMAIL_FROM || '❌ NOT SET'
+      },
+      hint: error.message?.includes('Invalid login') 
+        ? 'Check EMAIL_USER and EMAIL_PASS credentials'
+        : error.message?.includes('ECONNREFUSED')
+        ? 'Check EMAIL_HOST and EMAIL_PORT - SMTP server might be blocked'
+        : 'Check backend logs for more details'
+    });
+  }
+});
+
 // Test JWT_SECRET endpoint
 app.get('/test-jwt', (req, res) => {
   // Reload environment variables
