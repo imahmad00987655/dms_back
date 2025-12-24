@@ -8,6 +8,11 @@ export const generateToken = (userId, email, role) => {
   // Note: For production, JWT_SECRET should be set in environment variables
   const jwtSecret = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production';
   
+  // Log if using fallback (for debugging)
+  if (!process.env.JWT_SECRET) {
+    console.log('⚠️ Using hardcoded JWT_SECRET fallback - login will work');
+  }
+  
   return jwt.sign(
     { 
       userId, 
