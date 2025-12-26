@@ -263,19 +263,31 @@ router.post('/signup',
       }
 
       // Send OTP email (handle if email service fails)
+      let emailSent = false;
+      let emailError = null;
+      console.log('═══════════════════════════════════════════════════════════');
+      console.log('📧 SIGNUP: Attempting to send OTP email...');
+      console.log('  Email:', sanitizedData.email);
+      console.log('  OTP:', otp);
+      console.log('═══════════════════════════════════════════════════════════');
+      
       try {
         await sendOTPEmail(sanitizedData.email, otp, 'email_verification');
-        console.log(`✅ OTP email sent successfully to ${sanitizedData.email}`);
-      } catch (emailError) {
-        console.error('❌ CRITICAL: Failed to send OTP email during signup:');
+        emailSent = true;
+        console.log(`✅ SIGNUP: OTP email sent successfully to ${sanitizedData.email}`);
+      } catch (err) {
+        emailError = err;
+        console.error('═══════════════════════════════════════════════════════════');
+        console.error('❌ SIGNUP: CRITICAL - Failed to send OTP email:');
         console.error('  Email:', sanitizedData.email);
         console.error('  OTP:', otp);
-        console.error('  Error message:', emailError.message);
-        console.error('  Error code:', emailError.code);
-        console.error('  Error stack:', emailError.stack);
-        console.error('  Full error:', emailError);
+        console.error('  Error message:', err.message);
+        console.error('  Error code:', err.code);
+        console.error('  Error name:', err.name);
+        console.error('  Error stack:', err.stack);
+        console.error('  Full error:', err);
+        console.error('═══════════════════════════════════════════════════════════');
         // Don't fail signup if email fails - user can request OTP again
-        // But log it as ERROR not WARNING so it's visible in logs
       }
 
       // Create audit log
@@ -283,7 +295,9 @@ router.post('/signup',
 
       res.json({
         success: true,
-        message: 'Registration successful. Please check your email for verification code.'
+        message: 'Registration successful. Please check your email for verification code.',
+        emailSent: emailSent,
+        emailError: emailSent ? null : (emailError?.message || 'Email service unavailable')
       });
     } catch (error) {
       console.error('❌ SIGNUP ERROR:', error.message);
@@ -389,18 +403,29 @@ router.post('/verify-otp',
 
       if (users.length > 0) {
         // Send welcome email (handle if email service fails)
+        let welcomeEmailSent = false;
+        let welcomeEmailError = null;
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('📧 VERIFY-OTP: Attempting to send welcome email...');
+        console.log('  Email:', sanitizedEmail);
+        console.log('═══════════════════════════════════════════════════════════');
+        
         try {
           await sendWelcomeEmail(sanitizedEmail, users[0].first_name);
-          console.log(`✅ Welcome email sent successfully to ${sanitizedEmail}`);
-        } catch (emailError) {
-          console.error('❌ CRITICAL: Failed to send welcome email during OTP verification:');
+          welcomeEmailSent = true;
+          console.log(`✅ VERIFY-OTP: Welcome email sent successfully to ${sanitizedEmail}`);
+        } catch (err) {
+          welcomeEmailError = err;
+          console.error('═══════════════════════════════════════════════════════════');
+          console.error('❌ VERIFY-OTP: CRITICAL - Failed to send welcome email:');
           console.error('  Email:', sanitizedEmail);
-          console.error('  Error message:', emailError.message);
-          console.error('  Error code:', emailError.code);
-          console.error('  Error stack:', emailError.stack);
-          console.error('  Full error:', emailError);
+          console.error('  Error message:', err.message);
+          console.error('  Error code:', err.code);
+          console.error('  Error name:', err.name);
+          console.error('  Error stack:', err.stack);
+          console.error('  Full error:', err);
+          console.error('═══════════════════════════════════════════════════════════');
           // Don't fail verification if email fails
-          // But log it as ERROR not WARNING so it's visible in logs
         }
 
         // Create audit log (handle if audit_logs table doesn't exist)
