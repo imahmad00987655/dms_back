@@ -3,33 +3,58 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Create transporter using environment variables so it works locally and on Hostinger
-// Enhanced configuration for Hostinger compatibility
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: Number(process.env.EMAIL_PORT) || 587,
-  secure: Number(process.env.EMAIL_PORT) === 465, // true for 465, false for 587
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  // Enhanced TLS options for Hostinger
-  tls: {
-    rejectUnauthorized: false, // Allow self-signed certificates (sometimes needed on shared hosting)
-    // Remove ciphers restriction - let Node.js choose best cipher
-  },
-  // Require TLS for port 587
-  requireTLS: true,
-  // Connection timeout
-  connectionTimeout: 10000, // 10 seconds
-  // Greeting timeout
-  greetingTimeout: 10000,
-  // Socket timeout
-  socketTimeout: 10000,
-  // Debug mode - ALWAYS ON for production to see email issues
-  debug: true,
-  logger: true
-});
+// Lazy transporter creation - only create when credentials are available
+let transporter = null;
+
+// Function to get or create transporter with proper credential checks
+const getTransporter = () => {
+  console.log('🔧 Creating/Getting transporter...');
+  console.log('  EMAIL_USER:', process.env.EMAIL_USER ? `${process.env.EMAIL_USER.substring(0, 3)}***` : '❌ NOT SET');
+  console.log('  EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Set (length: ' + process.env.EMAIL_PASS.length + ')' : '❌ NOT SET');
+  console.log('  EMAIL_FROM:', process.env.EMAIL_FROM || '❌ NOT SET');
+  console.log('  EMAIL_HOST:', process.env.EMAIL_HOST || 'smtp.gmail.com (default)');
+  console.log('  EMAIL_PORT:', process.env.EMAIL_PORT || '587 (default)');
+  
+  // Check if credentials exist
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.error('❌ CRITICAL: Cannot create transporter - EMAIL_USER or EMAIL_PASS missing!');
+    throw new Error('Email service not configured: EMAIL_USER or EMAIL_PASS missing');
+  }
+  
+  // If transporter doesn't exist or credentials changed, create new one
+  if (!transporter) {
+    console.log('📦 Creating new transporter instance...');
+    transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+      port: Number(process.env.EMAIL_PORT) || 587,
+      secure: Number(process.env.EMAIL_PORT) === 465, // true for 465, false for 587
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+      // Enhanced TLS options for Hostinger
+      tls: {
+        rejectUnauthorized: false, // Allow self-signed certificates (sometimes needed on shared hosting)
+      },
+      // Require TLS for port 587
+      requireTLS: true,
+      // Connection timeout
+      connectionTimeout: 15000, // 15 seconds
+      // Greeting timeout
+      greetingTimeout: 15000,
+      // Socket timeout
+      socketTimeout: 15000,
+      // Debug mode - ALWAYS ON for production to see email issues
+      debug: true,
+      logger: true
+    });
+    console.log('✅ Transporter created successfully');
+  } else {
+    console.log('♻️ Using existing transporter');
+  }
+  
+  return transporter;
+};
 
 // Verify transporter configuration
 export const verifyEmailConfig = async () => {
@@ -38,7 +63,7 @@ export const verifyEmailConfig = async () => {
     console.log('  EMAIL_HOST:', process.env.EMAIL_HOST || 'not set (using default: smtp.gmail.com)');
     console.log('  EMAIL_PORT:', process.env.EMAIL_PORT || 'not set (using default: 587)');
     console.log('  EMAIL_USER:', process.env.EMAIL_USER ? `${process.env.EMAIL_USER.substring(0, 3)}***` : '❌ NOT SET');
-    console.log('  EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Set' : '❌ NOT SET');
+    console.log('  EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Set (length: ' + process.env.EMAIL_PASS.length + ')' : '❌ NOT SET');
     console.log('  EMAIL_FROM:', process.env.EMAIL_FROM || '❌ NOT SET');
     
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
@@ -46,7 +71,9 @@ export const verifyEmailConfig = async () => {
       return false;
     }
     
-    await transporter.verify();
+    const trans = getTransporter();
+    console.log('🔐 Verifying SMTP connection...');
+    await trans.verify();
     console.log('✅ Email service configured successfully - SMTP connection verified');
     return true;
   } catch (error) {
@@ -55,6 +82,7 @@ export const verifyEmailConfig = async () => {
     console.error('  Error code:', error.code);
     console.error('  Error command:', error.command);
     console.error('  Full error:', error);
+    console.error('  Stack:', error.stack);
     
     // Common error messages and solutions
     if (error.message.includes('Invalid login')) {
@@ -71,9 +99,16 @@ export const verifyEmailConfig = async () => {
 
 // Send OTP email
 export const sendOTPEmail = async (email, otp, type = 'verification') => {
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('📧 sendOTPEmail CALLED');
+  console.log('  Email:', email);
+  console.log('  OTP:', otp);
+  console.log('  Type:', type);
+  console.log('═══════════════════════════════════════════════════════════');
+  
   try {
     // CRITICAL: Check email credentials BEFORE attempting to send
-    console.log('🔍 Pre-flight check: Verifying email credentials...');
+    console.log('🔍 Step 1: Pre-flight check - Verifying email credentials...');
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.EMAIL_FROM) {
       const missing = [];
       if (!process.env.EMAIL_USER) missing.push('EMAIL_USER');
@@ -87,7 +122,7 @@ export const sendOTPEmail = async (email, otp, type = 'verification') => {
       throw new Error(`Email service not configured: Missing ${missing.join(', ')}. Please set these in Hostinger environment variables.`);
     }
     
-    console.log('✅ Email credentials check passed');
+    console.log('✅ Step 1: Email credentials check passed');
     console.log('  EMAIL_USER:', process.env.EMAIL_USER.substring(0, 3) + '***');
     console.log('  EMAIL_FROM:', process.env.EMAIL_FROM);
     
@@ -138,26 +173,46 @@ export const sendOTPEmail = async (email, otp, type = 'verification') => {
       html: htmlContent,
     };
 
-    console.log(`📧 Attempting to send OTP email to ${email}...`);
+    console.log('✅ Step 2: Email content prepared');
+    console.log(`📧 Step 3: Attempting to send OTP email to ${email}...`);
     console.log(`  From: ${process.env.EMAIL_FROM}`);
     console.log(`  Subject: ${subject}`);
     console.log(`  Host: ${process.env.EMAIL_HOST || 'smtp.gmail.com'}`);
     console.log(`  Port: ${process.env.EMAIL_PORT || 587}`);
     
-    // Try to send email (transporter.verify() is slow, so we'll catch errors during sendMail)
-    console.log('📤 Sending email via SMTP...');
-    const result = await transporter.sendMail(mailOptions);
-    console.log(`✅ OTP email sent successfully to ${email}`);
+    // Get transporter (will create if needed)
+    console.log('🔧 Step 4: Getting transporter...');
+    const trans = getTransporter();
+    console.log('✅ Step 4: Transporter obtained');
+    
+    // Try to send email
+    console.log('📤 Step 5: Sending email via SMTP...');
+    console.log('  Mail options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject,
+      htmlLength: mailOptions.html.length
+    });
+    
+    const result = await trans.sendMail(mailOptions);
+    
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log(`✅ SUCCESS: OTP email sent successfully to ${email}`);
     console.log(`  Message ID: ${result.messageId}`);
     console.log(`  Response: ${result.response}`);
+    console.log('═══════════════════════════════════════════════════════════');
     return result;
   } catch (error) {
-    console.error('❌ Failed to send OTP email:');
+    console.error('═══════════════════════════════════════════════════════════');
+    console.error('❌ FAILED: OTP email sending failed');
     console.error('  To:', email);
+    console.error('  OTP:', otp);
     console.error('  Error message:', error.message);
     console.error('  Error code:', error.code);
+    console.error('  Error name:', error.name);
     console.error('  Error command:', error.command);
-    console.error('  Full error:', error);
+    console.error('  Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    console.error('  Stack trace:', error.stack);
     
     // More detailed error information
     if (error.response) {
@@ -166,6 +221,12 @@ export const sendOTPEmail = async (email, otp, type = 'verification') => {
     if (error.responseCode) {
       console.error('  SMTP Response Code:', error.responseCode);
     }
+    if (error.code === 'EAUTH') {
+      console.error('  💡 AUTH ERROR: Check EMAIL_USER and EMAIL_PASS - might be incorrect');
+    } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+      console.error('  💡 CONNECTION ERROR: Check EMAIL_HOST and EMAIL_PORT - might be blocked');
+    }
+    console.error('═══════════════════════════════════════════════════════════');
     
     throw new Error(`Failed to send email: ${error.message}`);
   }
@@ -232,7 +293,8 @@ export const sendWelcomeEmail = async (email, firstName) => {
     };
 
     console.log(`📧 Attempting to send welcome email to ${email}...`);
-    const result = await transporter.sendMail(mailOptions);
+    const trans = getTransporter();
+    const result = await trans.sendMail(mailOptions);
     console.log(`✅ Welcome email sent to ${email}`);
     return result;
   } catch (error) {
@@ -241,4 +303,4 @@ export const sendWelcomeEmail = async (email, firstName) => {
   }
 };
 
-export default transporter; 
+export default getTransporter; 
