@@ -263,14 +263,16 @@ router.post('/signup',
       }
 
       // Send OTP email (handle if email service fails)
+      // Declare first
       let emailSent = false;
       let emailError = null;
+
       console.log('═══════════════════════════════════════════════════════════');
       console.log('📧 SIGNUP: Attempting to send OTP email...');
       console.log('  Email:', sanitizedData.email);
       console.log('  OTP:', otp);
       console.log('═══════════════════════════════════════════════════════════');
-      
+
       try {
         await sendOTPEmail(sanitizedData.email, otp, 'email_verification');
         emailSent = true;
@@ -278,14 +280,11 @@ router.post('/signup',
       } catch (err) {
         emailError = err;
         console.error('═══════════════════════════════════════════════════════════');
-        console.error('❌ SIGNUP: CRITICAL - Failed to send OTP email:');
-        console.error('  Email:', sanitizedData.email);
-        console.error('  OTP:', otp);
-        console.error('  Error message:', err.message);
-        console.error('  Error code:', err.code);
-        console.error('  Error name:', err.name);
-        console.error('  Error stack:', err.stack);
-        console.error('  Full error:', err);
+        console.error('❌ SIGNUP: CRITICAL EMAIL ERROR');
+        console.error('  Error name:', err?.name);
+        console.error('  Error message:', err?.message);
+        console.error('  Error code:', err?.code);
+        console.error('  Error stack:', err?.stack);
         console.error('═══════════════════════════════════════════════════════════');
         // Don't fail signup if email fails - user can request OTP again
       }
@@ -293,7 +292,8 @@ router.post('/signup',
       // Create audit log
       await createAuditLog(executeQuery, userId, 'SIGNUP_SUCCESS', 'User registered successfully', req.ip, req.get('User-Agent'));
 
-      res.json({
+      // ✅ Now send response AFTER emailSent/emailError are correct
+      return res.json({
         success: true,
         message: 'Registration successful. Please check your email for verification code.',
         emailSent: emailSent,
