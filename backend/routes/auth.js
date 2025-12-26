@@ -414,7 +414,9 @@ router.post('/verify-otp',
 
       res.json({
         success: true,
-        message: 'Email verified successfully'
+        message: 'Email verified successfully',
+        welcomeEmailSent: welcomeEmailSent,
+        welcomeEmailError: welcomeEmailSent ? null : (welcomeEmailError?.message || 'Email service unavailable')
       });
     } catch (error) {
       console.error('❌ VERIFY OTP ERROR:', error.message);
@@ -514,19 +516,31 @@ router.post('/forgot-password',
       }
 
         // Send OTP email (handle if email service fails)
+        let emailSent = false;
+        let emailError = null;
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('📧 FORGOT-PASSWORD: Attempting to send OTP email...');
+        console.log('  Email:', sanitizedEmail);
+        console.log('  OTP:', otp);
+        console.log('═══════════════════════════════════════════════════════════');
+        
         try {
           await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
-          console.log(`✅ OTP email sent successfully to ${sanitizedEmail}`);
-        } catch (emailError) {
-          console.error('❌ CRITICAL: Failed to send OTP email during forgot-password:');
+          emailSent = true;
+          console.log(`✅ FORGOT-PASSWORD: OTP email sent successfully to ${sanitizedEmail}`);
+        } catch (err) {
+          emailError = err;
+          console.error('═══════════════════════════════════════════════════════════');
+          console.error('❌ FORGOT-PASSWORD: CRITICAL - Failed to send OTP email:');
           console.error('  Email:', sanitizedEmail);
           console.error('  OTP:', otp);
-          console.error('  Error message:', emailError.message);
-          console.error('  Error code:', emailError.code);
-          console.error('  Error stack:', emailError.stack);
-          console.error('  Full error:', emailError);
+          console.error('  Error message:', err.message);
+          console.error('  Error code:', err.code);
+          console.error('  Error name:', err.name);
+          console.error('  Error stack:', err.stack);
+          console.error('  Full error:', err);
+          console.error('═══════════════════════════════════════════════════════════');
           // Don't fail forgot-password if email fails
-          // But log it as ERROR not WARNING so it's visible in logs
         }
 
       // Create audit log
@@ -534,7 +548,9 @@ router.post('/forgot-password',
 
       res.json({
         success: true,
-        message: 'If the email exists, a reset code has been sent'
+        message: 'If the email exists, a reset code has been sent',
+        emailSent: emailSent,
+        emailError: emailSent ? null : (emailError?.message || 'Email service unavailable')
       });
     } catch (error) {
       console.error('❌ FORGOT PASSWORD ERROR:', error.message);
