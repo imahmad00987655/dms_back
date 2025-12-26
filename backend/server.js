@@ -505,6 +505,24 @@ app.get('/test-db', async (req, res) => {
 // Test email configuration endpoint
 app.get('/test-email', async (req, res) => {
   try {
+    // Log raw environment variables FIRST (as requested by Hostinger support)
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log('🔍 RAW ENVIRONMENT VARIABLES CHECK:');
+    console.log('EMAIL_HOST from env:', process.env.EMAIL_HOST);
+    console.log('EMAIL_PORT from env:', process.env.EMAIL_PORT);
+    console.log('EMAIL_USER from env:', process.env.EMAIL_USER);
+    console.log('EMAIL_PASS from env:', process.env.EMAIL_PASS ? `Set (length: ${process.env.EMAIL_PASS.length})` : 'NOT SET');
+    console.log('EMAIL_FROM from env:', process.env.EMAIL_FROM);
+    console.log('All EMAIL_* vars:', {
+      EMAIL_HOST: process.env.EMAIL_HOST,
+      EMAIL_PORT: process.env.EMAIL_PORT,
+      EMAIL_USER: process.env.EMAIL_USER,
+      EMAIL_PASS: process.env.EMAIL_PASS ? `Set (length: ${process.env.EMAIL_PASS.length})` : 'NOT SET',
+      EMAIL_FROM: process.env.EMAIL_FROM,
+    });
+    console.log('All process.env keys containing EMAIL:', Object.keys(process.env).filter(key => key.includes('EMAIL')));
+    console.log('═══════════════════════════════════════════════════════════');
+    
     const email = req.query.email || process.env.EMAIL_USER;
     
     if (!email) {
