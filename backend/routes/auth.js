@@ -540,38 +540,38 @@ router.post('/forgot-password',
         }
       }
 
-        // Send OTP email (handle if email service fails)
-        let emailSent = false;
-        let emailError = null;
-        console.log('═══════════════════════════════════════════════════════════');
-        console.log('📧 FORGOT-PASSWORD: Attempting to send OTP email...');
-        console.log('  Email:', sanitizedEmail);
-        console.log('  OTP:', otp);
-        console.log('═══════════════════════════════════════════════════════════');
-        
-        try {
-          await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
-          emailSent = true;
-          console.log(`✅ FORGOT-PASSWORD: OTP email sent successfully to ${sanitizedEmail}`);
-        } catch (err) {
-          emailError = err;
-          console.error('═══════════════════════════════════════════════════════════');
-          console.error('❌ FORGOT-PASSWORD: CRITICAL - Failed to send OTP email:');
-          console.error('  Email:', sanitizedEmail);
-          console.error('  OTP:', otp);
-          console.error('  Error message:', err.message);
-          console.error('  Error code:', err.code);
-          console.error('  Error name:', err.name);
-          console.error('  Error stack:', err.stack);
-          console.error('  Full error:', err);
-          console.error('═══════════════════════════════════════════════════════════');
-          // Don't fail forgot-password if email fails
-        }
+      // Send OTP email (handle if email service fails)
+      // Declare first
+      let emailSent = false;
+      let emailError = null;
+
+      console.log('═══════════════════════════════════════════════════════════');
+      console.log('📧 FORGOT-PASSWORD: Attempting to send OTP email...');
+      console.log('  Email:', sanitizedEmail);
+      console.log('  OTP:', otp);
+      console.log('═══════════════════════════════════════════════════════════');
+
+      try {
+        await sendOTPEmail(sanitizedEmail, otp, 'password_reset');
+        emailSent = true;
+        console.log(`✅ FORGOT-PASSWORD: OTP email sent successfully to ${sanitizedEmail}`);
+      } catch (err) {
+        emailError = err;
+        console.error('═══════════════════════════════════════════════════════════');
+        console.error('❌ FORGOT-PASSWORD: CRITICAL EMAIL ERROR');
+        console.error('  Error name:', err?.name);
+        console.error('  Error message:', err?.message);
+        console.error('  Error code:', err?.code);
+        console.error('  Error stack:', err?.stack);
+        console.error('═══════════════════════════════════════════════════════════');
+        // Don't fail forgot-password if email fails
+      }
 
       // Create audit log
       await createAuditLog(executeQuery, users[0].id, 'PASSWORD_RESET_REQUESTED', 'Password reset requested', req.ip, req.get('User-Agent'));
 
-      res.json({
+      // ✅ Now send response AFTER emailSent/emailError are correct
+      return res.json({
         success: true,
         message: 'If the email exists, a reset code has been sent',
         emailSent: emailSent,
