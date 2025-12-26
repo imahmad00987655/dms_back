@@ -502,6 +502,17 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
+// Debug email environment variables endpoint (as requested by Hostinger support)
+app.get('/debug-email-env', (req, res) => {
+  res.json({
+    EMAIL_HOST: process.env.EMAIL_HOST || null,
+    EMAIL_PORT: process.env.EMAIL_PORT || null,
+    EMAIL_USER: process.env.EMAIL_USER || null,
+    EMAIL_PASS: process.env.EMAIL_PASS ? `Set (length: ${process.env.EMAIL_PASS.length})` : null,
+    EMAIL_FROM: process.env.EMAIL_FROM || null,
+  });
+});
+
 // Test email configuration endpoint
 app.get('/test-email', async (req, res) => {
   try {
