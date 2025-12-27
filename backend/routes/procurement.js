@@ -1920,34 +1920,59 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
       length: String(totalAmount).length
     });
     
-    await connection.execute(`
-      UPDATE po_headers SET
-        po_type = ?, supplier_id = ?, supplier_site_id = ?, buyer_id = ?,
-        requisition_id = ?, agreement_id = ?, po_date = ?, need_by_date = ?,
-        currency_code = ?, exchange_rate = ?, subtotal = ?, tax_amount = ?,
-        total_amount = ?, payment_terms_id = ?, description = ?, notes = ?,
-        status = ?, approval_status = ?, updated_at = NOW()
-      WHERE header_id = ?
-    `, params);
+    console.log('🔄 Updating PO header with params:', params.length, 'parameters');
+    try {
+      await connection.execute(`
+        UPDATE po_headers SET
+          po_type = ?, supplier_id = ?, supplier_site_id = ?, buyer_id = ?,
+          requisition_id = ?, agreement_id = ?, po_date = ?, need_by_date = ?,
+          currency_code = ?, exchange_rate = ?, subtotal = ?, tax_amount = ?,
+          total_amount = ?, payment_terms_id = ?, description = ?, notes = ?,
+          status = ?, approval_status = ?, updated_at = NOW()
+        WHERE header_id = ?
+      `, params);
+      console.log('✅ PO header updated successfully');
+    } catch (updateError) {
+      console.error('❌ Error updating PO header:', updateError);
+      throw updateError;
+    }
 
     // Delete existing lines and insert new ones
-    await connection.execute('DELETE FROM po_lines WHERE header_id = ?', [req.params.id]);
+    console.log('🔄 Deleting existing lines for PO:', req.params.id);
+    try {
+      await connection.execute('DELETE FROM po_lines WHERE header_id = ?', [req.params.id]);
+      console.log('✅ Existing lines deleted successfully');
+    } catch (deleteError) {
+      console.error('❌ Error deleting existing lines:', deleteError);
+      throw deleteError;
+    }
     
     // OPTIMIZED: Batch insert updated lines instead of loop
     if (lines && lines.length > 0) {
+      console.log(`🔄 Processing ${lines.length} line items for insertion`);
       const lineValues = [];
       try {
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
+          console.log(`🔄 Processing line ${i + 1}/${lines.length}:`, { item_code: line.item_code, item_name: line.item_name });
+          
           let lineId;
           try {
+            console.log(`🔄 Getting sequence for line ${i + 1}`);
             lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+            console.log(`✅ Got sequence value: ${lineId} for line ${i + 1}`);
           } catch (seqError) {
-            console.error(`Error getting sequence for line ${i + 1}:`, seqError);
+            console.error(`❌ Error getting sequence for line ${i + 1}:`, seqError);
+            console.error(`❌ Sequence error details:`, {
+              name: seqError.name,
+              message: seqError.message,
+              code: seqError.code,
+              stack: seqError.stack
+            });
             throw new Error(`Failed to get sequence for line ${i + 1}: ${seqError.message}`);
           }
           
-          lineValues.push([
+          const lineData = [
             lineId,
             req.params.id,
             i + 1,
@@ -1965,35 +1990,78 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
             Math.round((parseFloat(line.tax_amount) || 0) * 100) / 100,
             line.promised_date || null,
             line.notes || null
-          ]);
+          ];
+          
+          console.log(`✅ Line ${i + 1} data prepared:`, { lineId, header_id: req.params.id, line_number: i + 1 });
+          lineValues.push(lineData);
+        }
+        
+        if (lineValues.length === 0) {
+          throw new Error('No line values prepared for insertion');
         }
         
         const placeholders = lineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
         const flatValues = lineValues.flat();
         
-        console.log(`Inserting ${lineValues.length} lines with ${flatValues.length} values`);
+        console.log(`🔄 Inserting ${lineValues.length} lines with ${flatValues.length} total values`);
+        console.log(`🔄 Placeholders count: ${placeholders.split('?').length - 1}, Values count: ${flatValues.length}`);
         
-        await connection.execute(`
-          INSERT INTO po_lines (
-            line_id, header_id, line_number, item_code, item_name, description,
-            category, uom, quantity, box_quantity, packet_quantity, unit_price, line_amount, 
-            tax_rate, tax_amount, promised_date, notes
-          ) VALUES ${placeholders}
-        `, flatValues);
+        if (flatValues.length !== (lineValues.length * 17)) {
+          throw new Error(`Value count mismatch: Expected ${lineValues.length * 17}, got ${flatValues.length}`);
+        }
         
-        console.log('Lines inserted successfully');
+        try {
+          await connection.execute(`
+            INSERT INTO po_lines (
+              line_id, header_id, line_number, item_code, item_name, description,
+              category, uom, quantity, box_quantity, packet_quantity, unit_price, line_amount, 
+              tax_rate, tax_amount, promised_date, notes
+            ) VALUES ${placeholders}
+          `, flatValues);
+          
+          console.log('✅ Lines inserted successfully');
+        } catch (insertError) {
+          console.error('❌ Error executing INSERT statement:', insertError);
+          console.error('❌ INSERT error details:', {
+            name: insertError.name,
+            message: insertError.message,
+            code: insertError.code,
+            errno: insertError.errno,
+            sqlState: insertError.sqlState,
+            sqlMessage: insertError.sqlMessage
+          });
+          throw insertError;
+        }
       } catch (lineError) {
-        console.error('Error inserting lines:', lineError);
+        console.error('❌ Error in line insertion process:', lineError);
         throw lineError; // Re-throw to be caught by outer catch
       }
+    } else {
+      console.log('⚠️ No lines provided for insertion');
     }
     
-    // Log audit trail
-    await logAuditTrail(connection, req.user?.id || req.user?.userId || 1, 'UPDATE', 'PURCHASE_ORDER', req.params.id, oldValues, req.body);
+    // Log audit trail (don't fail if audit logging fails)
+    try {
+      console.log('🔄 Logging audit trail');
+      await logAuditTrail(connection, req.user?.id || req.user?.userId || 1, 'UPDATE', 'PURCHASE_ORDER', req.params.id, oldValues, req.body);
+      console.log('✅ Audit trail logged successfully');
+    } catch (auditError) {
+      console.error('⚠️ Error logging audit trail (non-fatal):', auditError);
+      // Don't throw - audit logging failure shouldn't break the update
+    }
     
     // Commit transaction
-    await connection.commit();
+    console.log('🔄 Committing transaction');
+    try {
+      await connection.commit();
+      console.log('✅ Transaction committed successfully');
+    } catch (commitError) {
+      console.error('❌ Error committing transaction:', commitError);
+      throw commitError;
+    }
+    
     connection.release();
+    console.log('✅ Purchase order updated successfully, connection released');
     
     res.json({ message: 'Purchase order updated successfully' });
   } catch (error) {
