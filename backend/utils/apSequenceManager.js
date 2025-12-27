@@ -16,24 +16,27 @@ class APSequenceManager {
         const connection = await pool.getConnection();
         
         try {
+            // Determine which sequences table to use based on the sequence name
+            const tableName = sequenceName.startsWith('AP_') ? 'ap_sequences' : 'ar_sequences';
+            
             // Start transaction using query (not execute)
             await connection.query('START TRANSACTION');
             
             // Update sequence value
             const [updateResult] = await connection.execute(`
-                UPDATE ar_sequences 
+                UPDATE ${tableName} 
                 SET current_value = current_value + increment_by 
                 WHERE sequence_name = ?
             `, [sequenceName]);
             
             if (updateResult.affectedRows === 0) {
-                throw new Error(`Sequence '${sequenceName}' not found`);
+                throw new Error(`Sequence '${sequenceName}' not found in ${tableName}`);
             }
             
             // Get the updated value
             const [rows] = await connection.execute(`
                 SELECT current_value 
-                FROM ar_sequences 
+                FROM ${tableName} 
                 WHERE sequence_name = ?
             `, [sequenceName]);
             
@@ -134,8 +137,10 @@ class APSequenceManager {
      */
     static async resetSequence(sequenceName, value) {
         try {
+            // Determine which sequences table to use
+            const tableName = sequenceName.startsWith('AP_') ? 'ap_sequences' : 'ar_sequences';
             await pool.execute(`
-                UPDATE ar_sequences 
+                UPDATE ${tableName} 
                 SET current_value = ? 
                 WHERE sequence_name = ?
             `, [value, sequenceName]);
@@ -151,14 +156,16 @@ class APSequenceManager {
      */
     static async getCurrentSequence(sequenceName) {
         try {
+            // Determine which sequences table to use
+            const tableName = sequenceName.startsWith('AP_') ? 'ap_sequences' : 'ar_sequences';
             const [rows] = await pool.execute(`
                 SELECT current_value 
-                FROM ar_sequences 
+                FROM ${tableName} 
                 WHERE sequence_name = ?
             `, [sequenceName]);
             
             if (rows.length === 0) {
-                throw new Error(`Sequence '${sequenceName}' not found`);
+                throw new Error(`Sequence '${sequenceName}' not found in ${tableName}`);
             }
             
             return rows[0].current_value;
@@ -183,15 +190,17 @@ class APSequenceManager {
             ];
             
             for (const seqName of sequences) {
+                // Determine which sequences table to use
+                const tableName = seqName.startsWith('AP_') ? 'ap_sequences' : 'ar_sequences';
                 const [existing] = await pool.execute(`
                     SELECT COUNT(*) as count 
-                    FROM ar_sequences 
+                    FROM ${tableName} 
                     WHERE sequence_name = ?
                 `, [seqName]);
                 
                 if (existing[0].count === 0) {
                     await pool.execute(`
-                        INSERT INTO ar_sequences (sequence_name, current_value) 
+                        INSERT INTO ${tableName} (sequence_name, current_value) 
                         VALUES (?, 1)
                     `, [seqName]);
                 }
@@ -207,14 +216,23 @@ class APSequenceManager {
      */
     static async getSequenceStats() {
         try {
-            const [rows] = await pool.execute(`
+            // Get stats from both tables
+            const [apRows] = await pool.execute(`
+                SELECT sequence_name, current_value, increment_by 
+                FROM ap_sequences 
+                WHERE sequence_name LIKE 'AP_%'
+                ORDER BY sequence_name
+            `);
+            
+            const [arRows] = await pool.execute(`
                 SELECT sequence_name, current_value, increment_by 
                 FROM ar_sequences 
                 WHERE sequence_name LIKE 'AP_%'
                 ORDER BY sequence_name
             `);
             
-            return rows;
+            // Combine results
+            return [...apRows, ...arRows];
         } catch (error) {
             throw new Error(`Failed to get sequence stats: ${error.message}`);
         }
