@@ -1810,13 +1810,9 @@ router.post('/purchase-orders', authenticateToken, async (req, res) => {
     
     res.status(500).json({ error: 'Failed to create purchase order', details: error.message });
   } finally {
-    // Ensure connection is closed even if there's an error
-    if (connection && connection.end) {
-      try {
-        connection.release();
-      } catch (closeError) {
-        console.error('Error closing connection:', closeError);
-      }
+    // Release connection back to pool
+    if (connection) {
+      connection.release();
     }
   }
 });
