@@ -362,6 +362,9 @@ router.get('/:id', async (req, res) => {
 // Fetch all invoices
 router.get('/', async (req, res) => {
   try {
+    const startTime = Date.now();
+    
+    // Get all invoices with customer info
     const rows = await executeQuery(`
       SELECT i.*, c.customer_name, c.customer_number
       FROM ar_invoices i
@@ -369,11 +372,35 @@ router.get('/', async (req, res) => {
       ORDER BY i.invoice_id DESC
     `);
 
-    // Update status based on amount_due for each invoice
-    // If amount_due is 0 or less, status should be 'PAID'
-    // If amount_due > 0 and status is PAID, status should be 'OPEN'
-    // This ensures status always matches the actual payment state
-    for (const row of rows) {
+    if (rows.length === 0) {
+      return res.json([]);
+    }
+
+    // Collect invoice IDs for batch operations
+    const invoiceIds = rows.map(row => row.invoice_id);
+    
+    // OPTIMIZED: Fetch all line items in one query instead of N+1 queries
+    const allLineItems = await executeQuery(`
+      SELECT * FROM ar_invoice_lines 
+      WHERE invoice_id IN (${invoiceIds.map(() => '?').join(',')})
+      ORDER BY invoice_id, line_number
+    `, invoiceIds);
+
+    // Group line items by invoice_id
+    const lineItemsMap = {};
+    allLineItems.forEach(item => {
+      if (!lineItemsMap[item.invoice_id]) {
+        lineItemsMap[item.invoice_id] = [];
+      }
+      lineItemsMap[item.invoice_id].push(item);
+    });
+
+    // Prepare batch updates for status corrections
+    const updatesToPaid = [];
+    const updatesToOpen = [];
+
+    // Process invoices and prepare updates
+    const invoices = rows.map(row => {
       const amountDue = Number(row.amount_due) || 0;
       const currentStatus = row.status;
       
@@ -381,39 +408,45 @@ router.get('/', async (req, res) => {
       // and the amount_due doesn't match the current status
       if (currentStatus !== 'DRAFT' && currentStatus !== 'CANCELLED' && currentStatus !== 'VOID') {
         if (amountDue <= 0.01 && currentStatus !== 'PAID') {
-          // Update status to PAID in database
-          await pool.execute(`
-            UPDATE ar_invoices 
-            SET status = 'PAID', updated_at = CURRENT_TIMESTAMP
-            WHERE invoice_id = ?
-          `, [row.invoice_id]);
+          updatesToPaid.push(row.invoice_id);
           row.status = 'PAID';
         } else if (amountDue > 0.01 && currentStatus === 'PAID') {
-          // Update status to OPEN in database (partial payment scenario)
-          await pool.execute(`
-            UPDATE ar_invoices 
-            SET status = 'OPEN', updated_at = CURRENT_TIMESTAMP
-            WHERE invoice_id = ?
-          `, [row.invoice_id]);
+          updatesToOpen.push(row.invoice_id);
           row.status = 'OPEN';
         }
       }
+
+      return {
+        ...row,
+        line_items: lineItemsMap[row.invoice_id] || []
+      };
+    });
+
+    // OPTIMIZED: Batch update statuses instead of individual queries
+    if (updatesToPaid.length > 0) {
+      await pool.execute(`
+        UPDATE ar_invoices 
+        SET status = 'PAID', updated_at = CURRENT_TIMESTAMP
+        WHERE invoice_id IN (${updatesToPaid.map(() => '?').join(',')})
+      `, updatesToPaid);
     }
 
-    // For each invoice, get the line items
-    const invoices = await Promise.all(rows.map(async (invoice) => {
-      const lineRows = await executeQuery(
-        'SELECT * FROM ar_invoice_lines WHERE invoice_id = ? ORDER BY line_number',
-        [invoice.invoice_id]
-      );
-      return {
-        ...invoice,
-        line_items: lineRows
-      };
-    }));
+    if (updatesToOpen.length > 0) {
+      await pool.execute(`
+        UPDATE ar_invoices 
+        SET status = 'OPEN', updated_at = CURRENT_TIMESTAMP
+        WHERE invoice_id IN (${updatesToOpen.map(() => '?').join(',')})
+      `, updatesToOpen);
+    }
+
+    const executionTime = Date.now() - startTime;
+    if (executionTime > 1000) {
+      console.warn(`⚠️ Slow invoices query: ${executionTime}ms for ${rows.length} invoices`);
+    }
 
     res.json(invoices);
   } catch (err) {
+    console.error('Error fetching invoices:', err);
     res.status(500).json({ error: err.message });
   }
 });

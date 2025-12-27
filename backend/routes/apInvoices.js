@@ -76,10 +76,13 @@ router.get('/', async (req, res) => {
             ORDER BY i.invoice_date DESC, i.invoice_id DESC
         `, params);
         
-        // Update status based on amount_due for each invoice
+        // OPTIMIZED: Batch update status based on amount_due for each invoice
         // If amount_due is 0 or less, status should be 'PAID'
         // If amount_due > 0 and status is not DRAFT/PENDING/CANCELLED/VOID, status should be 'OPEN'
         // approval_status is managed manually by users, not automatically
+        const updatesToPaid = [];
+        const updatesToOpen = [];
+        
         for (const row of rows) {
             const amountDue = Number(row.amount_due) || 0;
             const currentStatus = row.status;
@@ -89,23 +92,30 @@ router.get('/', async (req, res) => {
             if (currentStatus !== 'DRAFT' && currentStatus !== 'PENDING' && 
                 currentStatus !== 'CANCELLED' && currentStatus !== 'VOID') {
                 if (amountDue <= 0.01 && currentStatus !== 'PAID') {
-                    // Update status to PAID in database
-                    await pool.execute(`
-                        UPDATE ap_invoices 
-                        SET status = 'PAID', updated_at = CURRENT_TIMESTAMP
-                        WHERE invoice_id = ?
-                    `, [row.invoice_id]);
+                    updatesToPaid.push(row.invoice_id);
                     row.status = 'PAID';
                 } else if (amountDue > 0.01 && currentStatus === 'PAID') {
-                    // Update status to OPEN in database
-                    await pool.execute(`
-                        UPDATE ap_invoices 
-                        SET status = 'OPEN', updated_at = CURRENT_TIMESTAMP
-                        WHERE invoice_id = ?
-                    `, [row.invoice_id]);
+                    updatesToOpen.push(row.invoice_id);
                     row.status = 'OPEN';
                 }
             }
+        }
+        
+        // Batch update statuses instead of individual queries
+        if (updatesToPaid.length > 0) {
+            await pool.execute(`
+                UPDATE ap_invoices 
+                SET status = 'PAID', updated_at = CURRENT_TIMESTAMP
+                WHERE invoice_id IN (${updatesToPaid.map(() => '?').join(',')})
+            `, updatesToPaid);
+        }
+        
+        if (updatesToOpen.length > 0) {
+            await pool.execute(`
+                UPDATE ap_invoices 
+                SET status = 'OPEN', updated_at = CURRENT_TIMESTAMP
+                WHERE invoice_id IN (${updatesToOpen.map(() => '?').join(',')})
+            `, updatesToOpen);
         }
         
         res.json(rows);

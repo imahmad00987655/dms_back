@@ -10,8 +10,12 @@ export const dbConfig = {
   database: process.env.DB_NAME || 'u221106554_fluent_lol',
   port: process.env.DB_PORT || 3306,
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 20, // Increased from 10 to 20
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  acquireTimeout: 60000, // 60 seconds
+  timeout: 60000 // 60 seconds
 };
 
 // Create connection pool
@@ -51,13 +55,22 @@ export const testConnection = async () => {
   }
 };
 
-// Execute query with error handling
+// Execute query with error handling and performance tracking
 export const executeQuery = async (query, params = []) => {
+  const startTime = Date.now();
   try {
     const [rows] = await pool.execute(query, params);
+    const executionTime = Date.now() - startTime;
+    
+    // Log slow queries (> 500ms) for optimization
+    if (executionTime > 500) {
+      console.warn(`⚠️ Slow query detected (${executionTime}ms):`, query.substring(0, 100));
+    }
+    
     return rows;
   } catch (error) {
-    console.error('Database query error:', error);
+    const executionTime = Date.now() - startTime;
+    console.error(`❌ Database query error (${executionTime}ms):`, error);
     throw new Error(`Database error: ${error.message}`);
   }
 };

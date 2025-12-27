@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { testConnection } from './config/database.js';
+import pool, { executeQuery } from './config/database.js';
 import { verifyEmailConfig, sendOTPEmail } from './utils/emailService.js';
 import authRoutes from './routes/auth.js';
 import journalEntryRoutes from './routes/journalEntries.js';
@@ -502,6 +503,107 @@ app.get('/test-db', async (req, res) => {
       errno: error.errno || null,
       sqlState: error.sqlState || null,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Performance monitoring endpoint - Check server ping, DB speed, query performance
+app.get('/performance', async (req, res) => {
+  const startTime = Date.now();
+  const metrics = {
+    timestamp: new Date().toISOString(),
+    server: {
+      uptime: process.uptime(),
+      memory: {
+        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
+        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + ' MB',
+        rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB'
+      },
+      nodeVersion: process.version,
+      platform: process.platform
+    },
+    database: {
+      connection: null,
+      querySpeed: null,
+      poolStats: null
+    },
+    responseTime: null
+  };
+
+  try {
+    // Test database connection speed
+    const dbStartTime = Date.now();
+    const connection = await pool.getConnection();
+    const dbConnectionTime = Date.now() - dbStartTime;
+    
+    metrics.database.connection = {
+      status: 'connected',
+      latency: dbConnectionTime + ' ms',
+      host: process.env.DB_HOST || 'not set',
+      database: process.env.DB_NAME || 'not set'
+    };
+
+    // Test query speed (simple SELECT 1)
+    const queryStartTime = Date.now();
+    await connection.query('SELECT 1 as test');
+    const queryTime = Date.now() - queryStartTime;
+    
+    metrics.database.querySpeed = {
+      simpleQuery: queryTime + ' ms',
+      status: queryTime < 100 ? 'fast' : queryTime < 500 ? 'moderate' : 'slow'
+    };
+
+    // Get connection pool stats
+    const poolStats = pool.pool;
+    metrics.database.poolStats = {
+      totalConnections: poolStats._allConnections?.length || 0,
+      freeConnections: poolStats._freeConnections?.length || 0,
+      connectionLimit: poolStats.config?.connectionLimit || 0,
+      queueLength: poolStats._connectionQueue?.length || 0
+    };
+
+    connection.release();
+
+    // Test a more complex query (get users count)
+    const complexQueryStart = Date.now();
+    const [userCount] = await pool.execute('SELECT COUNT(*) as count FROM users');
+    const complexQueryTime = Date.now() - complexQueryStart;
+    
+    metrics.database.querySpeed.complexQuery = complexQueryTime + ' ms';
+    metrics.database.querySpeed.userCount = userCount[0]?.count || 0;
+
+    // Overall response time
+    metrics.responseTime = (Date.now() - startTime) + ' ms';
+
+    // Performance rating
+    const totalTime = Date.now() - startTime;
+    if (totalTime < 200) {
+      metrics.performance = 'excellent';
+    } else if (totalTime < 500) {
+      metrics.performance = 'good';
+    } else if (totalTime < 1000) {
+      metrics.performance = 'moderate';
+    } else {
+      metrics.performance = 'slow';
+    }
+
+    res.json({
+      success: true,
+      ...metrics
+    });
+
+  } catch (error) {
+    metrics.database.connection = {
+      status: 'failed',
+      error: error.message
+    };
+    metrics.responseTime = (Date.now() - startTime) + ' ms';
+    metrics.performance = 'error';
+
+    res.status(500).json({
+      success: false,
+      ...metrics,
+      error: error.message
     });
   }
 });
