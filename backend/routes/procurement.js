@@ -1936,41 +1936,56 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     // OPTIMIZED: Batch insert updated lines instead of loop
     if (lines && lines.length > 0) {
       const lineValues = [];
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+      try {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          let lineId;
+          try {
+            lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+          } catch (seqError) {
+            console.error(`Error getting sequence for line ${i + 1}:`, seqError);
+            throw new Error(`Failed to get sequence for line ${i + 1}: ${seqError.message}`);
+          }
+          
+          lineValues.push([
+            lineId,
+            req.params.id,
+            i + 1,
+            line.item_code || null,
+            line.item_name || null,
+            line.description || null,
+            line.category || null,
+            line.uom || 'PCS',
+            Math.round((parseFloat(line.quantity) || 0) * 100) / 100,
+            Math.round((parseFloat(line.box_quantity) || 0) * 100) / 100,
+            Math.round((parseFloat(line.packet_quantity) || 0) * 100) / 100,
+            Math.round((parseFloat(line.unit_price) || 0) * 100) / 100,
+            Math.round((parseFloat(line.line_amount) || 0) * 100) / 100,
+            Math.round((parseFloat(line.tax_rate) || 0) * 100) / 100,
+            Math.round((parseFloat(line.tax_amount) || 0) * 100) / 100,
+            line.promised_date || null,
+            line.notes || null
+          ]);
+        }
         
-        lineValues.push([
-          lineId,
-          req.params.id,
-          i + 1,
-          line.item_code || null,
-          line.item_name || null,
-          line.description || null,
-          line.category || null,
-          line.uom || 'PCS',
-          Math.round((parseFloat(line.quantity) || 0) * 100) / 100,
-          Math.round((parseFloat(line.box_quantity) || 0) * 100) / 100,
-          Math.round((parseFloat(line.packet_quantity) || 0) * 100) / 100,
-          Math.round((parseFloat(line.unit_price) || 0) * 100) / 100,
-          Math.round((parseFloat(line.line_amount) || 0) * 100) / 100,
-          Math.round((parseFloat(line.tax_rate) || 0) * 100) / 100,
-          Math.round((parseFloat(line.tax_amount) || 0) * 100) / 100,
-          line.promised_date || null,
-          line.notes || null
-        ]);
+        const placeholders = lineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const flatValues = lineValues.flat();
+        
+        console.log(`Inserting ${lineValues.length} lines with ${flatValues.length} values`);
+        
+        await connection.execute(`
+          INSERT INTO po_lines (
+            line_id, header_id, line_number, item_code, item_name, description,
+            category, uom, quantity, box_quantity, packet_quantity, unit_price, line_amount, 
+            tax_rate, tax_amount, promised_date, notes
+          ) VALUES ${placeholders}
+        `, flatValues);
+        
+        console.log('Lines inserted successfully');
+      } catch (lineError) {
+        console.error('Error inserting lines:', lineError);
+        throw lineError; // Re-throw to be caught by outer catch
       }
-      
-      const placeholders = lineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-      const flatValues = lineValues.flat();
-      
-      await connection.execute(`
-        INSERT INTO po_lines (
-          line_id, header_id, line_number, item_code, item_name, description,
-          category, uom, quantity, box_quantity, packet_quantity, unit_price, line_amount, 
-          tax_rate, tax_amount, promised_date, notes
-        ) VALUES ${placeholders}
-      `, flatValues);
     }
     
     // Log audit trail
@@ -1982,22 +1997,44 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     
     res.json({ message: 'Purchase order updated successfully' });
   } catch (error) {
-    console.error('Error updating purchase order:', error);
-    console.error('Error details:', error.message);
-    console.error('Error stack:', error.stack);
+    console.error('❌ Error updating purchase order:', error);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error code:', error.code);
+    console.error('❌ Error stack:', error.stack);
+    console.error('❌ Request body:', JSON.stringify(req.body, null, 2));
+    console.error('❌ PO ID:', req.params.id);
     
     // Rollback transaction on error
     if (connection) {
       try {
         await connection.rollback();
+        console.log('✅ Transaction rolled back successfully');
       } catch (rollbackError) {
-        console.error('Error rolling back transaction:', rollbackError);
+        console.error('❌ Error rolling back transaction:', rollbackError);
       }
     }
     
-    res.status(500).json({ 
+    // Provide more specific error messages
+    let errorMessage = error.message || 'Failed to update purchase order';
+    let statusCode = 500;
+    
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      errorMessage = 'Referenced record not found. Please check supplier, supplier site, or buyer information.';
+      statusCode = 400;
+    } else if (error.code === 'ER_DUP_ENTRY') {
+      errorMessage = 'Duplicate entry detected. Please check your data.';
+      statusCode = 400;
+    } else if (error.message && error.message.includes('Sequence')) {
+      errorMessage = `Sequence error: ${error.message}`;
+      statusCode = 500;
+    }
+    
+    res.status(statusCode).json({ 
       error: 'Failed to update purchase order',
-      details: error.message 
+      message: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      code: error.code
     });
   } finally {
     // Release connection back to pool
@@ -2881,3 +2918,4 @@ router.get('/generate-po-number', async (req, res) => {
 
 
 export default router;
+
