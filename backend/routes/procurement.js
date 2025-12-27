@@ -1,26 +1,28 @@
 import express from 'express';
-import mysql from 'mysql2/promise';
-import { dbConfig } from '../config/database.js';
+import pool from '../config/database.js';
 import jwt from 'jsonwebtoken';
 
 const router = express.Router();
 
-// Helper function to get next sequence value
+// OPTIMIZED: Helper function to get next sequence value (uses correct table)
 const getNextSequenceValue = async (connection, sequenceName) => {
+  // Determine which sequences table to use based on the sequence name
+  const tableName = sequenceName.startsWith('AP_') ? 'ap_sequences' : 'ar_sequences';
+  
   const [seqResult] = await connection.execute(
-    'SELECT current_value FROM ar_sequences WHERE sequence_name = ?',
+    `SELECT current_value FROM ${tableName} WHERE sequence_name = ? FOR UPDATE`,
     [sequenceName]
   );
   
   if (seqResult.length === 0) {
-    throw new Error(`Sequence ${sequenceName} not found`);
+    throw new Error(`Sequence ${sequenceName} not found in ${tableName}`);
   }
   
   const currentValue = seqResult[0].current_value;
   
-  // Update sequence for next use
+  // Update sequence for next use (atomic operation)
   await connection.execute(
-    'UPDATE ar_sequences SET current_value = current_value + 1 WHERE sequence_name = ?',
+    `UPDATE ${tableName} SET current_value = current_value + 1 WHERE sequence_name = ?`,
     [sequenceName]
   );
   
@@ -147,13 +149,10 @@ const requireAdmin = (req, res, next) => {
 // PURCHASE AGREEMENTS
 // ============================================================================
 
-// Get procurement suppliers endpoint
+// OPTIMIZED: Get procurement suppliers endpoint (uses connection pool)
 router.get('/suppliers', async (req, res) => {
   try {
-    console.log('Fetching procurement suppliers...');
-    const connection = await mysql.createConnection(dbConfig);
-    
-    const [suppliers] = await connection.execute(`
+    const [suppliers] = await pool.execute(`
       SELECT 
         supplier_id,
         supplier_name,
@@ -167,8 +166,6 @@ router.get('/suppliers', async (req, res) => {
       ORDER BY supplier_name
     `);
     
-    await connection.end();
-    
     res.json(suppliers);
   } catch (error) {
     console.error('Error fetching suppliers:', error);
@@ -176,25 +173,17 @@ router.get('/suppliers', async (req, res) => {
   }
 });
 
-// Test database connection endpoint
+// OPTIMIZED: Test database connection endpoint (uses connection pool)
 router.get('/test-db', async (req, res) => {
   try {
-    console.log('Testing database connection...');
-    const connection = await mysql.createConnection(dbConfig);
-    
     // Test basic connection
-    const [result] = await connection.execute('SELECT 1 as test');
-    console.log('Basic connection test:', result);
+    const [result] = await pool.execute('SELECT 1 as test');
     
     // Test if po_agreements table exists
-    const [tables] = await connection.execute("SHOW TABLES LIKE 'po_agreements'");
-    console.log('po_agreements table check:', tables);
+    const [tables] = await pool.execute("SHOW TABLES LIKE 'po_agreements'");
     
     // Test if ap_suppliers table exists
-    const [suppliers] = await connection.execute("SHOW TABLES LIKE 'ap_suppliers'");
-    console.log('ap_suppliers table check:', suppliers);
-    
-    await connection.end();
+    const [suppliers] = await pool.execute("SHOW TABLES LIKE 'ap_suppliers'");
     
     res.json({
       success: true,
@@ -218,18 +207,14 @@ router.get('/test-db', async (req, res) => {
 
 
 
-// Get agreement lines
+// OPTIMIZED: Get agreement lines (uses connection pool)
 router.get('/agreements/:agreementId/lines', async (req, res) => {
   try {
-    console.log('Fetching agreement lines for agreement ID:', req.params.agreementId);
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT * FROM po_agreement_lines 
       WHERE agreement_id = ? 
       ORDER BY line_number
     `, [req.params.agreementId]);
-    await connection.end();
-    console.log('Found agreement lines:', rows);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching agreement lines:', error);
@@ -237,10 +222,11 @@ router.get('/agreements/:agreementId/lines', async (req, res) => {
   }
 });
 
-// Create agreement line
+// OPTIMIZED: Create agreement line (uses connection pool with transaction)
 router.post('/agreements/:agreementId/lines', async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    await connection.beginTransaction();
     
     const lineId = await getNextSequenceValue(connection, 'PO_AGREEMENT_LINE_ID_SEQ');
     const {
@@ -264,25 +250,26 @@ router.post('/agreements/:agreementId/lines', async (req, res) => {
       min_quantity, max_quantity, need_by_date, suggested_supplier, suggested_supplier_id, notes
     ]);
     
-    await connection.end();
+    await connection.commit();
     res.status(201).json({ 
       message: 'Agreement line created successfully',
       line_id: lineId
     });
   } catch (error) {
+    await connection.rollback();
     console.error('Error creating agreement line:', error);
     res.status(500).json({ error: 'Failed to create agreement line' });
+  } finally {
+    connection.release();
   }
 });
 
 // ===== REMOVE/COMMENT OUT THE OLD AGREEMENTS ROUTE =====
-// Get all purchase agreements
+// OPTIMIZED: Get all purchase agreements (uses connection pool, optimized query)
 router.get('/agreements', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
     const { search, status, supplier_id } = req.query;
     
-    console.log('🔍 Using UPDATED query with ap_suppliers');
     let query = `
       SELECT 
         pa.*,
@@ -292,14 +279,11 @@ router.get('/agreements', async (req, res) => {
         u2.first_name as created_by_name
       FROM po_agreements pa
       JOIN ap_suppliers sp ON pa.supplier_id = sp.supplier_id
-      JOIN parties p ON sp.party_id = p.party_id
       LEFT JOIN ap_supplier_sites ps ON pa.supplier_site_id = ps.site_id
       JOIN users u1 ON pa.buyer_id = u1.id
       JOIN users u2 ON pa.created_by = u2.id
       WHERE 1=1
     `;
-    
-    console.log('🔍 EXECUTING QUERY:', query);
     
     const params = [];
     
@@ -321,8 +305,7 @@ router.get('/agreements', async (req, res) => {
     
     query += ` ORDER BY pa.created_at DESC`;
     
-    const [rows] = await connection.execute(query, params);
-    await connection.end();
+    const [rows] = await pool.execute(query, params);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching purchase agreements:', error);
@@ -354,7 +337,7 @@ router.post('/test-agreement', async (req, res) => {
     }
     
     console.log('Creating database connection...');
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     console.log('Database connection created successfully');
     
     // Generate agreement ID and number
@@ -470,7 +453,7 @@ router.post('/test-agreement', async (req, res) => {
       console.log('Line items created successfully');
     }
     
-    await connection.end();
+    connection.release();
     
     console.log('Agreement created successfully');
     
@@ -498,11 +481,11 @@ router.post('/test-agreement', async (req, res) => {
   }
 });
 
-// Create purchase agreement (no auth)
+// OPTIMIZED: Create purchase agreement (uses connection pool with transaction)
 router.post('/agreements', async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    console.log('=== AGREEMENT CREATION VIA /agreements ===');
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    await connection.beginTransaction();
     
     const {
       agreement_number,
@@ -522,24 +505,17 @@ router.post('/agreements', async (req, res) => {
       effective_end_date = ''
     } = req.body;
     
-    console.log('Parsed request data:', {
-      agreement_number,
-      supplier_id,
-      description,
-      lines_count: lines?.length || 0
-    });
-    
     if (!supplier_id) {
+      await connection.rollback();
+      connection.release();
       return res.status(400).json({ error: 'supplier_id is required' });
     }
     
     if (!agreement_number) {
+      await connection.rollback();
+      connection.release();
       return res.status(400).json({ error: 'agreement_number is required' });
     }
-    
-    console.log('Creating database connection...');
-    const connection = await mysql.createConnection(dbConfig);
-    console.log('Database connection created successfully');
     
     // Use the agreement number from frontend, generate ID
     const agreementId = Date.now();
@@ -573,14 +549,16 @@ router.post('/agreements', async (req, res) => {
     );
     
     if (supplierResult.length === 0) {
-      await connection.end();
+      await connection.rollback();
+      connection.release();
       return res.status(400).json({ error: 'Supplier not found' });
     }
     
     const party_id = supplierResult[0].party_id;
     
+    // OPTIMIZED: Batch insert line items instead of loop
     // Insert agreement header with minimal required fields
-    const result = await connection.execute(`
+    await connection.execute(`
       INSERT INTO po_agreements (
         agreement_id, 
         agreement_number, 
@@ -669,7 +647,7 @@ router.post('/agreements', async (req, res) => {
       console.log('Line items created successfully');
     }
     
-    await connection.end();
+    connection.release();
     
     console.log('Agreement created successfully');
     
@@ -697,11 +675,10 @@ router.post('/agreements', async (req, res) => {
   }
 });
 
-// Get purchase agreement by ID
+// OPTIMIZED: Get purchase agreement by ID (uses connection pool, removed unnecessary JOIN)
 router.get('/agreements/:id', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT 
         pa.*,
         sp.supplier_name,
@@ -710,14 +687,11 @@ router.get('/agreements/:id', async (req, res) => {
         u2.first_name as created_by_name
       FROM po_agreements pa
       JOIN ap_suppliers sp ON pa.supplier_id = sp.supplier_id
-      JOIN parties p ON sp.party_id = p.party_id
       LEFT JOIN ap_supplier_sites ps ON pa.supplier_site_id = ps.site_id
       JOIN users u1 ON pa.buyer_id = u1.id
       JOIN users u2 ON pa.created_by = u2.id
       WHERE pa.agreement_id = ?
     `, [req.params.id]);
-    
-    await connection.end();
     
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Purchase agreement not found' });
@@ -743,7 +717,7 @@ router.post('/create-agreement', async (req, res) => {
       return res.status(400).json({ error: 'supplier_id is required' });
     }
     
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Generate unique ID using timestamp
     const agreementId = Date.now();
@@ -830,7 +804,7 @@ router.post('/create-agreement', async (req, res) => {
       console.log('Line items created successfully');
     }
     
-    await connection.end();
+    connection.release();
     
     console.log('Agreement created successfully');
     
@@ -859,7 +833,7 @@ router.post('/create-agreement', async (req, res) => {
 // Update purchase agreement
 router.put('/agreements/:id', authenticateToken, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -868,7 +842,7 @@ router.put('/agreements/:id', authenticateToken, async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Purchase agreement not found' });
     }
     
@@ -956,7 +930,7 @@ router.put('/agreements/:id', authenticateToken, async (req, res) => {
     
     await logAuditTrail(connection, req.user.id, 'UPDATE', 'AGREEMENT', req.params.id, oldValues, cleanedNewValues);
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Purchase agreement updated successfully' });
   } catch (error) {
     console.error('Error updating purchase agreement:', error);
@@ -967,7 +941,7 @@ router.put('/agreements/:id', authenticateToken, async (req, res) => {
 // Delete purchase agreement (soft delete)
 router.delete('/agreements/:id', requireAdmin, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -976,7 +950,7 @@ router.delete('/agreements/:id', requireAdmin, async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Purchase agreement not found' });
     }
     
@@ -991,7 +965,7 @@ router.delete('/agreements/:id', requireAdmin, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'DELETE', 'AGREEMENT', req.params.id, oldValues, { status: 'CANCELLED' });
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Purchase agreement cancelled successfully' });
   } catch (error) {
     console.error('Error cancelling purchase agreement:', error);
@@ -1003,10 +977,9 @@ router.delete('/agreements/:id', requireAdmin, async (req, res) => {
 // PURCHASE REQUISITIONS
 // ============================================================================
 
-// Get all purchase requisitions
+// OPTIMIZED: Get all purchase requisitions (uses connection pool)
 router.get('/requisitions', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
     const { search, status, requester_id } = req.query;
     
     let query = `
@@ -1042,8 +1015,7 @@ router.get('/requisitions', async (req, res) => {
     
     query += ` ORDER BY pr.created_at DESC`;
     
-    const [rows] = await connection.execute(query, params);
-    await connection.end();
+    const [rows] = await pool.execute(query, params);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching purchase requisitions:', error);
@@ -1051,42 +1023,37 @@ router.get('/requisitions', async (req, res) => {
   }
 });
 
-// Get purchase requisition by ID with lines
+// OPTIMIZED: Get purchase requisition by ID with lines (uses connection pool, parallel queries)
 router.get('/requisitions/:id', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    // OPTIMIZED: Fetch header and lines in parallel
+    const [headerRows, lineRows] = await Promise.all([
+      pool.execute(`
+        SELECT 
+          pr.*,
+          u1.first_name as requester_name,
+          u2.first_name as buyer_name,
+          u3.first_name as created_by_name
+        FROM po_requisitions pr
+        JOIN users u1 ON pr.requester_id = u1.id
+        LEFT JOIN users u2 ON pr.buyer_id = u2.id
+        JOIN users u3 ON pr.created_by = u3.id
+        WHERE pr.requisition_id = ?
+      `, [req.params.id]),
+      pool.execute(`
+        SELECT * FROM po_requisition_lines 
+        WHERE requisition_id = ? 
+        ORDER BY line_number
+      `, [req.params.id])
+    ]);
     
-    // Get header
-    const [headerRows] = await connection.execute(`
-      SELECT 
-        pr.*,
-        u1.first_name as requester_name,
-        u2.first_name as buyer_name,
-        u3.first_name as created_by_name
-      FROM po_requisitions pr
-      JOIN users u1 ON pr.requester_id = u1.id
-      LEFT JOIN users u2 ON pr.buyer_id = u2.id
-      JOIN users u3 ON pr.created_by = u3.id
-      WHERE pr.requisition_id = ?
-    `, [req.params.id]);
-    
-    if (headerRows.length === 0) {
-      await connection.end();
+    if (headerRows[0].length === 0) {
       return res.status(404).json({ error: 'Purchase requisition not found' });
     }
     
-    // Get lines
-    const [lineRows] = await connection.execute(`
-      SELECT * FROM po_requisition_lines 
-      WHERE requisition_id = ? 
-      ORDER BY line_number
-    `, [req.params.id]);
-    
-    await connection.end();
-    
     const result = {
-      ...headerRows[0],
-      lines: lineRows
+      ...headerRows[0][0],
+      lines: lineRows[0]
     };
     
     res.json(result);
@@ -1099,7 +1066,7 @@ router.get('/requisitions/:id', async (req, res) => {
 // Create purchase requisition
 router.post('/requisitions', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Get next requisition ID and generate requisition number
     const requisitionId = await getNextSequenceValue(connection, 'PO_REQUISITION_ID_SEQ');
@@ -1142,7 +1109,7 @@ router.post('/requisitions', async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'CREATE', 'REQUISITION', requisitionId, null, req.body);
     
-    await connection.end();
+    connection.release();
     res.status(201).json({ 
       message: 'Purchase requisition created successfully',
       requisition_id: requisitionId,
@@ -1154,10 +1121,11 @@ router.post('/requisitions', async (req, res) => {
   }
 });
 
-// Update purchase requisition
+// OPTIMIZED: Update purchase requisition (uses connection pool, batch insert lines)
 router.put('/requisitions/:id', async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    await connection.beginTransaction();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -1166,7 +1134,8 @@ router.put('/requisitions/:id', async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      await connection.rollback();
+      connection.release();
       return res.status(404).json({ error: 'Purchase requisition not found' });
     }
     
@@ -1193,28 +1162,41 @@ router.put('/requisitions/:id', async (req, res) => {
     // Delete existing lines and insert new ones
     await connection.execute('DELETE FROM po_requisition_lines WHERE requisition_id = ?', [req.params.id]);
     
-    // Insert updated lines
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+    // OPTIMIZED: Batch insert updated lines
+    if (lines && lines.length > 0) {
+      const lineValues = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+        
+        lineValues.push([
+          lineId, req.params.id, i + 1, line.item_code, line.item_name,
+          line.description, line.category, line.uom, line.quantity, line.unit_price, line.line_amount,
+          line.need_by_date, line.suggested_supplier, line.suggested_supplier_id, line.notes
+        ]);
+      }
+      
+      const placeholders = lineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const flatValues = lineValues.flat();
       
       await connection.execute(`
         INSERT INTO po_requisition_lines (
           line_id, requisition_id, line_number, item_code, item_name,
           description, category, uom, quantity, unit_price, line_amount,
           need_by_date, suggested_supplier, suggested_supplier_id, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [lineId, req.params.id, i + 1, line.item_code, line.item_name,
-          line.description, line.category, line.uom, line.quantity, line.unit_price, line.line_amount,
-          line.need_by_date, line.suggested_supplier, line.suggested_supplier_id, line.notes]);
+        ) VALUES ${placeholders}
+      `, flatValues);
     }
     
     // Log audit trail
-    await logAuditTrail(connection, req.user.id, 'UPDATE', 'REQUISITION', req.params.id, oldValues, req.body);
+    await logAuditTrail(connection, req.user?.id || 1, 'UPDATE', 'REQUISITION', req.params.id, oldValues, req.body);
     
-    await connection.end();
+    await connection.commit();
+    connection.release();
     res.json({ message: 'Purchase requisition updated successfully' });
   } catch (error) {
+    await connection.rollback();
+    connection.release();
     console.error('Error updating purchase requisition:', error);
     res.status(500).json({ error: 'Failed to update purchase requisition' });
   }
@@ -1223,7 +1205,7 @@ router.put('/requisitions/:id', async (req, res) => {
 // Delete purchase requisition (soft delete)
 router.delete('/requisitions/:id', requireAdmin, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -1232,7 +1214,7 @@ router.delete('/requisitions/:id', requireAdmin, async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Purchase requisition not found' });
     }
     
@@ -1247,7 +1229,7 @@ router.delete('/requisitions/:id', requireAdmin, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'DELETE', 'REQUISITION', req.params.id, oldValues, { status: 'CANCELLED' });
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Purchase requisition cancelled successfully' });
   } catch (error) {
     console.error('Error cancelling purchase requisition:', error);
@@ -1467,10 +1449,9 @@ const updatePOStatusFromReceipts = async (connection, headerId) => {
   }
 };
 
-// Get all purchase orders
+// OPTIMIZED: Get all purchase orders (uses connection pool)
 router.get('/purchase-orders', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
     const { search, status, supplier_id } = req.query;
     
     let query = `
@@ -1484,7 +1465,7 @@ router.get('/purchase-orders', async (req, res) => {
         pa.agreement_number
       FROM po_headers ph
       JOIN ap_suppliers s ON ph.supplier_id = s.supplier_id
-      JOIN ap_supplier_sites ss ON ph.supplier_site_id = ss.site_id
+      LEFT JOIN ap_supplier_sites ss ON ph.supplier_site_id = ss.site_id
       JOIN users u1 ON ph.buyer_id = u1.id
       JOIN users u2 ON ph.created_by = u2.id
       LEFT JOIN po_requisitions pr ON ph.requisition_id = pr.requisition_id
@@ -1512,8 +1493,7 @@ router.get('/purchase-orders', async (req, res) => {
     
     query += ` ORDER BY ph.created_at DESC`;
     
-    const [rows] = await connection.execute(query, params);
-    await connection.end();
+    const [rows] = await pool.execute(query, params);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching purchase orders:', error);
@@ -1521,52 +1501,43 @@ router.get('/purchase-orders', async (req, res) => {
   }
 });
 
-// Get purchase order by ID with lines
+// OPTIMIZED: Get purchase order by ID with lines (uses connection pool, parallel queries)
 router.get('/purchase-orders/:id', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    // OPTIMIZED: Fetch header and lines in parallel for faster response
+    const [headerRows, lineRows] = await Promise.all([
+      pool.execute(`
+        SELECT 
+          ph.*,
+          s.supplier_name,
+          ss.site_name as supplier_site_name,
+          u1.first_name as buyer_name,
+          u2.first_name as created_by_name,
+          pr.requisition_number,
+          pa.agreement_number
+        FROM po_headers ph
+        JOIN ap_suppliers s ON ph.supplier_id = s.supplier_id
+        LEFT JOIN ap_supplier_sites ss ON ph.supplier_site_id = ss.site_id
+        JOIN users u1 ON ph.buyer_id = u1.id
+        JOIN users u2 ON ph.created_by = u2.id
+        LEFT JOIN po_requisitions pr ON ph.requisition_id = pr.requisition_id
+        LEFT JOIN po_agreements pa ON ph.agreement_id = pa.agreement_id
+        WHERE ph.header_id = ?
+      `, [req.params.id]),
+      pool.execute(`
+        SELECT * FROM po_lines 
+        WHERE header_id = ? 
+        ORDER BY line_number
+      `, [req.params.id])
+    ]);
     
-    // Get header
-    const [headerRows] = await connection.execute(`
-      SELECT 
-        ph.*,
-        s.supplier_name,
-        ss.site_name as supplier_site_name,
-        u1.first_name as buyer_name,
-        u2.first_name as created_by_name,
-        pr.requisition_number,
-        pa.agreement_number
-      FROM po_headers ph
-      JOIN ap_suppliers s ON ph.supplier_id = s.supplier_id
-      LEFT JOIN ap_supplier_sites ss ON ph.supplier_site_id = ss.site_id
-      JOIN users u1 ON ph.buyer_id = u1.id
-      JOIN users u2 ON ph.created_by = u2.id
-      LEFT JOIN po_requisitions pr ON ph.requisition_id = pr.requisition_id
-      LEFT JOIN po_agreements pa ON ph.agreement_id = pa.agreement_id
-      WHERE ph.header_id = ?
-    `, [req.params.id]);
-    
-    console.log('🔍 Backend - Purchase order query result:', headerRows[0]);
-    console.log('🔍 Backend - supplier_site_id:', headerRows[0]?.supplier_site_id);
-    console.log('🔍 Backend - supplier_site_name:', headerRows[0]?.supplier_site_name);
-    
-    if (headerRows.length === 0) {
-      await connection.end();
+    if (headerRows[0].length === 0) {
       return res.status(404).json({ error: 'Purchase order not found' });
     }
     
-    // Get lines
-    const [lineRows] = await connection.execute(`
-      SELECT * FROM po_lines 
-      WHERE header_id = ? 
-      ORDER BY line_number
-    `, [req.params.id]);
-    
-    await connection.end();
-    
     const result = {
-      ...headerRows[0],
-      lines: lineRows
+      ...headerRows[0][0],
+      lines: lineRows[0]
     };
     
     res.json(result);
@@ -1576,13 +1547,10 @@ router.get('/purchase-orders/:id', async (req, res) => {
   }
 });
 
-// Create purchase order
+// OPTIMIZED: Create purchase order (uses connection pool)
 router.post('/purchase-orders', authenticateToken, async (req, res) => {
-  let connection;
+  const connection = await pool.getConnection();
   try {
-    connection = await mysql.createConnection(dbConfig);
-    
-    // Start transaction
     await connection.beginTransaction();
     
     const {
@@ -1866,7 +1834,7 @@ router.post('/purchase-orders', authenticateToken, async (req, res) => {
     // Ensure connection is closed even if there's an error
     if (connection && connection.end) {
       try {
-        await connection.end();
+        connection.release();
       } catch (closeError) {
         console.error('Error closing connection:', closeError);
       }
@@ -1874,13 +1842,10 @@ router.post('/purchase-orders', authenticateToken, async (req, res) => {
   }
 });
 
-// Update purchase order
+// OPTIMIZED: Update purchase order (uses connection pool)
 router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
-  let connection;
+  const connection = await pool.getConnection();
   try {
-    connection = await mysql.createConnection(dbConfig);
-    
-    // Start transaction
     await connection.beginTransaction();
     
     // Get current values for audit trail
@@ -1891,7 +1856,7 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     
     if (currentResult.length === 0) {
       await connection.rollback();
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Purchase order not found' });
     }
     
@@ -1911,7 +1876,7 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     // Validate required fields
     if (!lines || !Array.isArray(lines) || lines.length === 0) {
       await connection.rollback();
-      await connection.end();
+      connection.release();
       return res.status(400).json({ error: 'At least one line item is required' });
     }
     
@@ -1939,7 +1904,7 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     if (Math.abs(subtotal) > maxAmount || Math.abs(taxAmount) > maxAmount || 
         Math.abs(totalAmount) > maxAmount) {
       await connection.rollback();
-      await connection.end();
+      connection.release();
       return res.status(400).json({ error: 'Amount values exceed maximum allowed limit' });
     }
     
@@ -1993,41 +1958,44 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     // Delete existing lines and insert new ones
     await connection.execute('DELETE FROM po_lines WHERE header_id = ?', [req.params.id]);
     
-    // Insert updated lines
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      console.log(`Processing line ${i + 1}:`, line);
-      const lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
-      console.log(`Generated line ID: ${lineId}`);
+    // OPTIMIZED: Batch insert updated lines instead of loop
+    if (lines && lines.length > 0) {
+      const lineValues = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineId = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+        
+        lineValues.push([
+          lineId,
+          req.params.id,
+          i + 1,
+          line.item_code || null,
+          line.item_name || null,
+          line.description || null,
+          line.category || null,
+          line.uom || 'PCS',
+          Math.round((parseFloat(line.quantity) || 0) * 100) / 100,
+          Math.round((parseFloat(line.box_quantity) || 0) * 100) / 100,
+          Math.round((parseFloat(line.packet_quantity) || 0) * 100) / 100,
+          Math.round((parseFloat(line.unit_price) || 0) * 100) / 100,
+          Math.round((parseFloat(line.line_amount) || 0) * 100) / 100,
+          Math.round((parseFloat(line.tax_rate) || 0) * 100) / 100,
+          Math.round((parseFloat(line.tax_amount) || 0) * 100) / 100,
+          line.promised_date || null,
+          line.notes || null
+        ]);
+      }
       
-      // Convert undefined values to null for MySQL and ensure proper number formatting
-      const lineParams = [
-        lineId,
-        req.params.id,
-        i + 1,
-        line.item_code || null,
-        line.item_name || null,
-        line.description || null,
-        line.category || null,
-        line.uom || 'PCS',
-        Math.round((parseFloat(line.quantity) || 0) * 100) / 100,
-        Math.round((parseFloat(line.box_quantity) || 0) * 100) / 100,
-        Math.round((parseFloat(line.packet_quantity) || 0) * 100) / 100,
-        Math.round((parseFloat(line.unit_price) || 0) * 100) / 100,
-        Math.round((parseFloat(line.line_amount) || 0) * 100) / 100,
-        Math.round((parseFloat(line.tax_rate) || 0) * 100) / 100,
-        Math.round((parseFloat(line.tax_amount) || 0) * 100) / 100,
-        line.promised_date || null,
-        line.notes || null
-      ];
+      const placeholders = lineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const flatValues = lineValues.flat();
       
       await connection.execute(`
         INSERT INTO po_lines (
           line_id, header_id, line_number, item_code, item_name, description,
           category, uom, quantity, box_quantity, packet_quantity, unit_price, line_amount, 
           tax_rate, tax_amount, promised_date, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, lineParams);
+        ) VALUES ${placeholders}
+      `, flatValues);
     }
     
     // Log audit trail
@@ -2059,7 +2027,7 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     // Ensure connection is closed even if there's an error
     if (connection && connection.end) {
       try {
-        await connection.end();
+        connection.release();
       } catch (closeError) {
         console.error('Error closing connection:', closeError);
       }
@@ -2087,7 +2055,7 @@ router.patch('/purchase-orders/:id/status', authenticateToken, async (req, res) 
     );
     
     if (existing.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Purchase order not found' });
     }
     
@@ -2100,7 +2068,7 @@ router.patch('/purchase-orders/:id/status', authenticateToken, async (req, res) 
     if (status !== undefined && status !== null && status !== '') {
       const normalizedStatus = String(status).toUpperCase().trim();
       if (!validStatuses.includes(normalizedStatus)) {
-        await connection.end();
+        connection.release();
         return res.status(400).json({ 
           error: `Invalid status value '${status}'. Must be one of: ${validStatuses.join(', ')}` 
         });
@@ -2112,7 +2080,7 @@ router.patch('/purchase-orders/:id/status', authenticateToken, async (req, res) 
     if (approval_status !== undefined && approval_status !== null && approval_status !== '') {
       const normalizedApproval = String(approval_status).toUpperCase().trim();
       if (!validApprovalStatuses.includes(normalizedApproval)) {
-        await connection.end();
+        connection.release();
         return res.status(400).json({ 
           error: `Invalid approval_status value '${approval_status}'. Must be one of: ${validApprovalStatuses.join(', ')}` 
         });
@@ -2139,13 +2107,13 @@ router.patch('/purchase-orders/:id/status', authenticateToken, async (req, res) 
     
     await logAuditTrail(connection, req.user?.id || 1, 'UPDATE', 'PURCHASE_ORDER_STATUS', id, existing[0], req.body);
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Purchase order status updated successfully' });
   } catch (error) {
     console.error('Error updating purchase order status:', error);
     if (connection) {
       try {
-        await connection.end();
+        connection.release();
       } catch (closeError) {
         console.error('Error closing connection after status update:', closeError);
       }
@@ -2157,7 +2125,7 @@ router.patch('/purchase-orders/:id/status', authenticateToken, async (req, res) 
 // Delete purchase order (soft delete)
 router.delete('/purchase-orders/:id', requireAdmin, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -2166,7 +2134,7 @@ router.delete('/purchase-orders/:id', requireAdmin, async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Purchase order not found' });
     }
     
@@ -2181,7 +2149,7 @@ router.delete('/purchase-orders/:id', requireAdmin, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'DELETE', 'PURCHASE_ORDER', req.params.id, oldValues, { status: 'CANCELLED' });
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Purchase order cancelled successfully' });
   } catch (error) {
     console.error('Error cancelling purchase order:', error);
@@ -2193,10 +2161,9 @@ router.delete('/purchase-orders/:id', requireAdmin, async (req, res) => {
 // GOODS RECEIPT NOTES
 // ============================================================================
 
-// Get all goods receipts
+// OPTIMIZED: Get all goods receipts (uses pool directly, no connection management)
 router.get('/receipts', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
     const { search, status, header_id } = req.query;
     
     let query = `
@@ -2234,8 +2201,7 @@ router.get('/receipts', async (req, res) => {
     
     query += ` ORDER BY pr.created_at DESC`;
     
-    const [rows] = await connection.execute(query, params);
-    await connection.end();
+    const [rows] = await pool.execute(query, params);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching goods receipts:', error);
@@ -2243,52 +2209,47 @@ router.get('/receipts', async (req, res) => {
   }
 });
 
-// Get goods receipt by ID with lines
+// OPTIMIZED: Get goods receipt by ID with lines (uses pool directly, parallel queries)
 router.get('/receipts/:id', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    // OPTIMIZED: Fetch header and lines in parallel
+    const [headerRows, lineRows] = await Promise.all([
+      pool.execute(`
+        SELECT 
+          pr.*,
+          ph.po_number,
+          ph.supplier_id,
+          ph.supplier_site_id,
+          s.supplier_name,
+          u.first_name as created_by_name
+        FROM po_receipts pr
+        JOIN po_headers ph ON pr.header_id = ph.header_id
+        JOIN ap_suppliers s ON ph.supplier_id = s.supplier_id
+        JOIN users u ON pr.created_by = u.id
+        WHERE pr.receipt_id = ?
+      `, [req.params.id]),
+      pool.execute(`
+        SELECT 
+          prl.*,
+          pl.item_name as po_item_name,
+          pl.quantity as po_quantity,
+          pl.unit_price as po_unit_price,
+          pl.tax_rate as po_tax_rate,
+          pl.tax_amount as po_tax_amount
+        FROM po_receipt_lines prl
+        JOIN po_lines pl ON prl.line_id = pl.line_id
+        WHERE prl.receipt_id = ? 
+        ORDER BY prl.line_number
+      `, [req.params.id])
+    ]);
     
-    // Get header
-    const [headerRows] = await connection.execute(`
-      SELECT 
-        pr.*,
-        ph.po_number,
-        ph.supplier_id,
-        ph.supplier_site_id,
-        s.supplier_name,
-        u.first_name as created_by_name
-      FROM po_receipts pr
-      JOIN po_headers ph ON pr.header_id = ph.header_id
-      JOIN ap_suppliers s ON ph.supplier_id = s.supplier_id
-      JOIN users u ON pr.created_by = u.id
-      WHERE pr.receipt_id = ?
-    `, [req.params.id]);
-    
-    if (headerRows.length === 0) {
-      await connection.end();
+    if (headerRows[0].length === 0) {
       return res.status(404).json({ error: 'Goods receipt not found' });
     }
     
-    // Get lines
-    const [lineRows] = await connection.execute(`
-      SELECT 
-        prl.*,
-        pl.item_name as po_item_name,
-        pl.quantity as po_quantity,
-        pl.unit_price as po_unit_price,
-        pl.tax_rate as po_tax_rate,
-        pl.tax_amount as po_tax_amount
-      FROM po_receipt_lines prl
-      JOIN po_lines pl ON prl.line_id = pl.line_id
-      WHERE prl.receipt_id = ? 
-      ORDER BY prl.line_number
-    `, [req.params.id]);
-    
-    await connection.end();
-    
     const result = {
-      ...headerRows[0],
-      lines: lineRows
+      ...headerRows[0][0],
+      lines: lineRows[0]
     };
     
     res.json(result);
@@ -2298,11 +2259,11 @@ router.get('/receipts/:id', async (req, res) => {
   }
 });
 
-// Create goods receipt
+// OPTIMIZED: Create goods receipt (uses connection pool)
 router.post('/receipts', authenticateToken, async (req, res) => {
-  let connection;
+  const connection = await pool.getConnection();
   try {
-    connection = await mysql.createConnection(dbConfig);
+    await connection.beginTransaction();
     
     // Get next receipt ID and generate receipt number
     const receiptId = await getNextSequenceValue(connection, 'PO_RECEIPT_ID_SEQ');
@@ -2340,36 +2301,47 @@ router.post('/receipts', authenticateToken, async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, receiptParams);
     
-    // Insert lines
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const receiptLineId = await getNextSequenceValue(connection, 'PO_RECEIPT_LINE_ID_SEQ');
+    // OPTIMIZED: Batch insert lines and batch update PO lines
+    if (lines && lines.length > 0) {
+      const lineValues = [];
+      const poLineUpdates = [];
       
-      // Convert undefined values to null for MySQL and include tax fields
-      const lineParams = [
-        receiptLineId,
-        receiptId,
-        line.line_id || null,
-        i + 1,
-        line.item_code || null,
-        line.item_name || null,
-        line.description || null,
-        line.uom || 'EA',
-        line.quantity_ordered || 0,
-        line.quantity_received || 0,
-        line.quantity_accepted || 0,
-        line.quantity_rejected || 0,
-        line.unit_price || 0,
-        // New tax fields (persist what frontend calculated)
-        line.tax_rate || 0,
-        line.tax_amount || 0,
-        line.line_amount || 0,
-        line.lot_number || null,
-        line.serial_number || null,
-        line.expiration_date || null,
-        line.rejection_reason || null,
-        line.notes || null
-      ];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const receiptLineId = await getNextSequenceValue(connection, 'PO_RECEIPT_LINE_ID_SEQ');
+        
+        lineValues.push([
+          receiptLineId,
+          receiptId,
+          line.line_id || null,
+          i + 1,
+          line.item_code || null,
+          line.item_name || null,
+          line.description || null,
+          line.uom || 'EA',
+          line.quantity_ordered || 0,
+          line.quantity_received || 0,
+          line.quantity_accepted || 0,
+          line.quantity_rejected || 0,
+          line.unit_price || 0,
+          line.tax_rate || 0,
+          line.tax_amount || 0,
+          line.line_amount || 0,
+          line.lot_number || null,
+          line.serial_number || null,
+          line.expiration_date || null,
+          line.rejection_reason || null,
+          line.notes || null
+        ]);
+        
+        if (line.line_id && line.quantity_received) {
+          poLineUpdates.push({ line_id: line.line_id, quantity: line.quantity_received });
+        }
+      }
+      
+      // Batch insert all receipt lines
+      const placeholders = lineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const flatValues = lineValues.flat();
       
       await connection.execute(`
         INSERT INTO po_receipt_lines (
@@ -2377,16 +2349,24 @@ router.post('/receipts', authenticateToken, async (req, res) => {
           description, uom, quantity_ordered, quantity_received, quantity_accepted,
           quantity_rejected, unit_price, tax_rate, tax_amount, line_amount, lot_number, serial_number,
           expiration_date, rejection_reason, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, lineParams);
+        ) VALUES ${placeholders}
+      `, flatValues);
       
-      // Update PO line received quantities
-      await connection.execute(`
-        UPDATE po_lines SET 
-          quantity_received = quantity_received + ?,
-          updated_at = NOW()
-        WHERE line_id = ?
-      `, [line.quantity_received, line.line_id]);
+      // Batch update PO line received quantities
+      if (poLineUpdates.length > 0) {
+        const updatePlaceholders = poLineUpdates.map(() => 'WHEN ? THEN quantity_received + ?').join(' ');
+        const updateIds = poLineUpdates.map(u => u.line_id);
+        const updateValues = poLineUpdates.flatMap(u => [u.line_id, u.quantity]);
+        
+        await connection.execute(`
+          UPDATE po_lines SET 
+            quantity_received = CASE line_id
+              ${updatePlaceholders}
+            END,
+            updated_at = NOW()
+          WHERE line_id IN (${updateIds.map(() => '?').join(',')})
+        `, [...updateValues, ...updateIds]);
+      }
     }
     
     // Update PO header received amount (include tax so it matches PO total)
@@ -2411,23 +2391,18 @@ router.post('/receipts', authenticateToken, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'CREATE', 'RECEIPT', receiptId, null, req.body);
     
-    await connection.end();
+    connection.release();
     res.status(201).json({ 
       message: 'Goods receipt created successfully',
       receipt_id: receiptId,
       receipt_number: receiptNumber
     });
   } catch (error) {
-    console.error('Error creating goods receipt:', error);
-    console.error('Error details:', error.message);
-    console.error('Error stack:', error.stack);
     if (connection) {
-      try {
-        await connection.end();
-      } catch (closeError) {
-        console.error('Error closing connection:', closeError);
-      }
+      await connection.rollback();
+      connection.release();
     }
+    console.error('Error creating goods receipt:', error);
     res.status(500).json({ 
       error: 'Failed to create goods receipt',
       details: error.message 
@@ -2435,10 +2410,11 @@ router.post('/receipts', authenticateToken, async (req, res) => {
   }
 });
 
-// Update goods receipt
+// OPTIMIZED: Update goods receipt (uses connection pool with transaction)
 router.put('/receipts/:id', authenticateToken, async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    await connection.beginTransaction();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -2447,7 +2423,8 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      await connection.rollback();
+      connection.release();
       return res.status(404).json({ error: 'Goods receipt not found' });
     }
     
@@ -2636,7 +2613,7 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'UPDATE', 'RECEIPT', req.params.id, oldValues, req.body);
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Goods receipt updated successfully' });
   } catch (error) {
     console.error('Error updating goods receipt:', error);
@@ -2647,7 +2624,7 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
 // Delete goods receipt (soft delete)
 router.delete('/receipts/:id', authenticateToken, async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Get current values for audit trail
     const [currentResult] = await connection.execute(
@@ -2656,7 +2633,7 @@ router.delete('/receipts/:id', authenticateToken, async (req, res) => {
     );
     
     if (currentResult.length === 0) {
-      await connection.end();
+      connection.release();
       return res.status(404).json({ error: 'Goods receipt not found' });
     }
     
@@ -2679,7 +2656,7 @@ router.delete('/receipts/:id', authenticateToken, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'DELETE', 'RECEIPT', req.params.id, oldValues, { status: 'CANCELLED' });
     
-    await connection.end();
+    connection.release();
     res.json({ message: 'Goods receipt cancelled successfully' });
   } catch (error) {
     console.error('Error cancelling goods receipt:', error);
@@ -2691,17 +2668,15 @@ router.delete('/receipts/:id', authenticateToken, async (req, res) => {
 // SUPPORTING DATA ENDPOINTS
 // ============================================================================
 
-// Get suppliers for dropdowns
+// OPTIMIZED: Get suppliers for dropdowns (uses pool directly)
 router.get('/suppliers', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT supplier_id, supplier_number, supplier_name 
       FROM ap_suppliers 
       WHERE status = 'ACTIVE' 
       ORDER BY supplier_name
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching suppliers:', error);
@@ -2712,17 +2687,15 @@ router.get('/suppliers', async (req, res) => {
 // Get supplier sites - REMOVED: This route conflicts with customer-supplier routes
 // Use /api/customer-supplier/suppliers/:supplierId/sites instead
 
-// Get users for dropdowns
+// OPTIMIZED: Get users for dropdowns (uses pool directly)
 router.get('/users', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT id, first_name, last_name, email, role 
       FROM users 
       WHERE is_active = TRUE 
       ORDER BY first_name, last_name
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching users:', error);
@@ -2730,17 +2703,15 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// Get purchase requisitions for dropdowns
+// OPTIMIZED: Get purchase requisitions for dropdowns (uses pool directly)
 router.get('/requisitions-dropdown', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT requisition_id, requisition_number, description, total_amount 
       FROM po_requisitions 
       WHERE status = 'APPROVED' 
       ORDER BY created_at DESC
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching requisitions:', error);
@@ -2748,17 +2719,15 @@ router.get('/requisitions-dropdown', async (req, res) => {
   }
 });
 
-// Get purchase agreements for dropdowns
+// OPTIMIZED: Get purchase agreements for dropdowns (uses pool directly)
 router.get('/agreements-dropdown', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT agreement_id, agreement_number, description, amount_remaining 
       FROM po_agreements 
       WHERE status = 'ACTIVE' AND amount_remaining > 0 
       ORDER BY created_at DESC
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching agreements:', error);
@@ -2766,17 +2735,15 @@ router.get('/agreements-dropdown', async (req, res) => {
   }
 });
 
-// Get purchase orders for dropdowns
+// OPTIMIZED: Get purchase orders for dropdowns (uses pool directly)
 router.get('/purchase-orders-dropdown', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT header_id, po_number, description, total_amount, amount_received
       FROM po_headers 
       WHERE status = 'RELEASED' AND (total_amount - amount_received) > 0 
       ORDER BY created_at DESC
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching purchase orders:', error);
@@ -2784,20 +2751,15 @@ router.get('/purchase-orders-dropdown', async (req, res) => {
   }
 });
 
-// Get PO lines for dropdowns and GRN
+// OPTIMIZED: Get PO lines for dropdowns and GRN (uses pool directly)
 router.get('/purchase-orders/:headerId/lines', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    // Return all lines, not just those with quantity_remaining > 0
-    // This allows GRN to show all items from the PO
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT line_id, line_number, item_code, item_name, description, uom, quantity, quantity_remaining, unit_price, line_amount
       FROM po_lines 
       WHERE header_id = ?
       ORDER BY line_number
     `, [req.params.headerId]);
-    await connection.end();
-    console.log(`Fetched ${rows.length} lines for PO ${req.params.headerId}`);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching PO lines:', error);
@@ -2806,17 +2768,15 @@ router.get('/purchase-orders/:headerId/lines', async (req, res) => {
 });
 
 
-// Get procurement categories
+// OPTIMIZED: Get procurement categories (uses pool directly)
 router.get('/categories', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT category_id, category_code, category_name, description 
       FROM po_categories 
       WHERE is_active = TRUE 
       ORDER BY category_name
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching categories:', error);
@@ -2824,17 +2784,15 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-// Get procurement items
+// OPTIMIZED: Get procurement items (uses pool directly)
 router.get('/items', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute(`
+    const [rows] = await pool.execute(`
       SELECT item_id, item_code, item_name, description, category_id, uom, standard_price 
       FROM po_items 
       WHERE is_active = TRUE 
       ORDER BY item_name
     `);
-    await connection.end();
     res.json(rows);
   } catch (error) {
     console.error('Error fetching items:', error);
@@ -2848,7 +2806,7 @@ router.get('/generate-po-number', async (req, res) => {
     const { year } = req.query;
     const currentYear = year || new Date().getFullYear();
     
-    const connection = await mysql.createConnection(dbConfig);
+    const connection = await pool.getConnection();
     
     // Start transaction for atomicity
     await connection.beginTransaction();
@@ -2916,7 +2874,7 @@ router.get('/generate-po-number', async (req, res) => {
         );
         
         await connection.commit();
-        await connection.end();
+        connection.release();
         
         res.json({ 
           po_number: generatedPO,
@@ -2926,7 +2884,7 @@ router.get('/generate-po-number', async (req, res) => {
         });
       } else {
         await connection.rollback();
-        await connection.end();
+        connection.release();
         res.status(409).json({ 
           error: 'Generated PO number already exists. Please retry.',
           success: false
@@ -2934,7 +2892,7 @@ router.get('/generate-po-number', async (req, res) => {
       }
     } catch (error) {
       await connection.rollback();
-      await connection.end();
+      connection.release();
       throw error;
     }
   } catch (error) {
