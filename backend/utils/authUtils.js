@@ -32,7 +32,7 @@ export const generateToken = (userId, email, role) => {
     },
     jwtSecret,
     { 
-      expiresIn: process.env.JWT_EXPIRES_IN || '7d' 
+      expiresIn: process.env.JWT_EXPIRES_IN || '30d' 
     }
   );
 };
@@ -43,7 +43,13 @@ export const verifyToken = (token) => {
   // Note: For production, JWT_SECRET should be set in environment variables
   const jwtSecret = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this-in-production';
   
-  return jwt.verify(token, jwtSecret);
+  try {
+    return jwt.verify(token, jwtSecret);
+  } catch (error) {
+    // Log the specific error for debugging
+    console.error('🔴 Token verification failed:', error.name, error.message);
+    throw error; // Re-throw to let middleware handle it
+  }
 };
 
 // Hash password

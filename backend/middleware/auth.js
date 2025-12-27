@@ -38,9 +38,25 @@ export const authenticateToken = async (req, res, next) => {
 
     next();
   } catch (error) {
+    // Log specific error for debugging
+    console.error('🔴 Authentication failed:', {
+      errorName: error.name,
+      errorMessage: error.message,
+      tokenPresent: !!token,
+      tokenLength: token ? token.length : 0
+    });
+    
+    // Provide more specific error messages
+    let errorMessage = 'Invalid or expired token';
+    if (error.name === 'TokenExpiredError') {
+      errorMessage = 'Token has expired. Please login again.';
+    } else if (error.name === 'JsonWebTokenError') {
+      errorMessage = 'Invalid token. Please login again.';
+    }
+    
     return res.status(403).json({ 
       success: false, 
-      message: 'Invalid or expired token' 
+      message: errorMessage 
     });
   }
 };
