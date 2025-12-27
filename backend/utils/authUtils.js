@@ -32,7 +32,9 @@ export const generateToken = (userId, email, role) => {
     },
     jwtSecret,
     { 
-      expiresIn: process.env.JWT_EXPIRES_IN || '30d' 
+      // Increased expiration to 90 days (3 months) for better user experience
+      // Can be overridden by JWT_EXPIRES_IN environment variable
+      expiresIn: process.env.JWT_EXPIRES_IN || '90d' 
     }
   );
 };
