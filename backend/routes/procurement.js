@@ -1,3 +1,4 @@
+
 import express from 'express';
 import pool from '../config/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
@@ -1977,10 +1978,11 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     }
     
     // Log audit trail
-    await logAuditTrail(connection, req.user.id, 'UPDATE', 'PURCHASE_ORDER', req.params.id, oldValues, req.body);
+    await logAuditTrail(connection, req.user?.id || req.user?.userId || 1, 'UPDATE', 'PURCHASE_ORDER', req.params.id, oldValues, req.body);
     
     // Commit transaction
     await connection.commit();
+    connection.release();
     
     res.json({ message: 'Purchase order updated successfully' });
   } catch (error) {
@@ -1989,7 +1991,7 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
     console.error('Error stack:', error.stack);
     
     // Rollback transaction on error
-    if (connection && connection.rollback) {
+    if (connection) {
       try {
         await connection.rollback();
       } catch (rollbackError) {
@@ -2002,30 +2004,25 @@ router.put('/purchase-orders/:id', authenticateToken, async (req, res) => {
       details: error.message 
     });
   } finally {
-    // Ensure connection is closed even if there's an error
-    if (connection && connection.end) {
-      try {
-        connection.release();
-      } catch (closeError) {
-        console.error('Error closing connection:', closeError);
-      }
+    // Release connection back to pool
+    if (connection) {
+      connection.release();
     }
   }
 });
 
-// Update purchase order status / approval status only
+// OPTIMIZED: Update purchase order status / approval status only (uses connection pool)
 router.patch('/purchase-orders/:id/status', authenticateToken, async (req, res) => {
-  let connection;
+  const connection = await pool.getConnection();
   try {
     const { id } = req.params;
     const { status, approval_status } = req.body;
     
     if ((status === undefined || status === null || status === '') &&
         (approval_status === undefined || approval_status === null || approval_status === '')) {
+      connection.release();
       return res.status(400).json({ error: 'No status fields provided' });
     }
-    
-    connection = await mysql.createConnection(dbConfig);
     
     const [existing] = await connection.execute(
       'SELECT header_id, status, approval_status, approved_by, approved_at FROM po_headers WHERE header_id = ?',
@@ -2125,12 +2122,15 @@ router.delete('/purchase-orders/:id', requireAdmin, async (req, res) => {
     );
     
     // Log audit trail
-    await logAuditTrail(connection, req.user.id, 'DELETE', 'PURCHASE_ORDER', req.params.id, oldValues, { status: 'CANCELLED' });
+    await logAuditTrail(connection, req.user?.id || req.user?.userId || 1, 'DELETE', 'PURCHASE_ORDER', req.params.id, oldValues, { status: 'CANCELLED' });
     
     connection.release();
     res.json({ message: 'Purchase order cancelled successfully' });
   } catch (error) {
     console.error('Error cancelling purchase order:', error);
+    if (connection) {
+      connection.release();
+    }
     res.status(500).json({ error: 'Failed to cancel purchase order' });
   }
 });
