@@ -2985,5 +2985,39 @@ router.get('/generate-po-number', async (req, res) => {
 
 
 
+// Debug endpoint to test PO update sequence
+router.get('/test-po-sequence', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    
+    // Test sequence
+    const testSeq = await getNextSequenceValue(connection, 'PO_LINE_ID_SEQ');
+    
+    await connection.rollback();
+    connection.release();
+    
+    res.json({
+      success: true,
+      message: 'Sequence test successful',
+      sequenceValue: testSeq,
+      sequenceName: 'PO_LINE_ID_SEQ'
+    });
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (e) {}
+      connection.release();
+    }
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      name: error.name
+    });
+  }
+});
+
 export default router;
 
