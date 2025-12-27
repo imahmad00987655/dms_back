@@ -610,12 +610,71 @@ app.get('/performance', async (req, res) => {
 
 // Debug email environment variables endpoint (as requested by Hostinger support)
 app.get('/debug-email-env', (req, res) => {
-  res.json({
+  const emailVars = {
     EMAIL_HOST: process.env.EMAIL_HOST || null,
     EMAIL_PORT: process.env.EMAIL_PORT || null,
     EMAIL_USER: process.env.EMAIL_USER || null,
     EMAIL_PASS: process.env.EMAIL_PASS ? `Set (length: ${process.env.EMAIL_PASS.length})` : null,
     EMAIL_FROM: process.env.EMAIL_FROM || null,
+  };
+  
+  // Check if all email vars are set
+  const allSet = emailVars.EMAIL_HOST && emailVars.EMAIL_USER && emailVars.EMAIL_PASS && emailVars.EMAIL_FROM;
+  
+  res.json({
+    ...emailVars,
+    status: allSet ? '✅ All email variables loaded' : '❌ Missing email variables',
+    timestamp: new Date().toISOString(),
+    note: allSet ? 'Environment variables are working correctly!' : 'Waiting for Hostinger to fix environment variable injection...'
+  });
+});
+
+// Environment variables status check endpoint (for monitoring when Hostinger fixes the issue)
+app.get('/env-status', (req, res) => {
+  const requiredVars = {
+    // Database
+    DB_HOST: process.env.DB_HOST,
+    DB_USER: process.env.DB_USER,
+    DB_PASSWORD: process.env.DB_PASSWORD ? 'Set' : null,
+    DB_NAME: process.env.DB_NAME,
+    DB_PORT: process.env.DB_PORT,
+    
+    // JWT
+    JWT_SECRET: process.env.JWT_SECRET ? `Set (${process.env.JWT_SECRET.length} chars)` : null,
+    JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || null,
+    
+    // Email
+    EMAIL_HOST: process.env.EMAIL_HOST || null,
+    EMAIL_PORT: process.env.EMAIL_PORT || null,
+    EMAIL_USER: process.env.EMAIL_USER || null,
+    EMAIL_PASS: process.env.EMAIL_PASS ? `Set (${process.env.EMAIL_PASS.length} chars)` : null,
+    EMAIL_FROM: process.env.EMAIL_FROM || null,
+    
+    // Server
+    NODE_ENV: process.env.NODE_ENV || null,
+    PORT: process.env.PORT || null,
+  };
+  
+  // Count how many are set
+  const setCount = Object.values(requiredVars).filter(v => v !== null).length;
+  const totalCount = Object.keys(requiredVars).length;
+  const percentage = Math.round((setCount / totalCount) * 100);
+  
+  // Critical vars check
+  const criticalVars = ['JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS', 'EMAIL_FROM'];
+  const criticalSet = criticalVars.every(v => requiredVars[v] !== null);
+  
+  res.json({
+    status: criticalSet ? '✅ Critical variables loaded' : '⚠️ Waiting for environment variables',
+    percentage: `${percentage}%`,
+    setCount,
+    totalCount,
+    criticalVarsStatus: criticalSet ? '✅ All critical variables set' : '❌ Missing critical variables',
+    variables: requiredVars,
+    timestamp: new Date().toISOString(),
+    message: criticalSet 
+      ? '🎉 Environment variables are working! Email service should be functional now.'
+      : '⏳ Environment variables not yet loaded. Hostinger support is working on this issue.'
   });
 });
 
