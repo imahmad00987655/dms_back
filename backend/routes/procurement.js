@@ -1284,28 +1284,44 @@ const updateInventoryFromGRN = async (connection, receiptId, isReversal = false)
       [receiptId]
     );
 
+    // OPTIMIZED: Batch fetch all inventory details in one query
+    if (receiptLines.length === 0) return;
+    
+    const itemCodes = receiptLines.map(line => line.item_code).filter(Boolean);
+    if (itemCodes.length === 0) return;
+    
+    const [allInventoryDetails] = await connection.execute(
+      `SELECT iid.id, iid.inventory_item_id, iid.box_quantity, iid.packet_quantity, iid.version, ih.item_code
+       FROM inventory_item_details iid
+       JOIN inventory_items ih ON iid.inventory_item_id = ih.id
+       WHERE ih.item_code IN (${itemCodes.map(() => '?').join(',')}) AND iid.is_active = 1`,
+      itemCodes
+    );
+    
+    // Create map for quick lookup
+    const inventoryMap = {};
+    allInventoryDetails.forEach(detail => {
+      if (!inventoryMap[detail.item_code]) {
+        inventoryMap[detail.item_code] = detail;
+      }
+    });
+    
+    // Prepare batch updates
+    const updates = [];
+    const packetUpdates = [];
+    
     for (const line of receiptLines) {
       const itemCode = line.item_code;
       const acceptedQty = parseFloat(line.quantity_accepted) || 0;
       
-      if (acceptedQty <= 0) continue;
-
-      // Get current inventory item details
-      const [inventoryDetails] = await connection.execute(
-        `SELECT iid.id, iid.inventory_item_id, iid.box_quantity, iid.packet_quantity, iid.version
-         FROM inventory_item_details iid
-         JOIN inventory_items ih ON iid.inventory_item_id = ih.id
-         WHERE ih.item_code = ? AND iid.is_active = 1
-         LIMIT 1`,
-        [itemCode]
-      );
-
-      if (inventoryDetails.length === 0) {
-        console.warn(`Inventory item not found for item_code: ${itemCode}`);
+      if (acceptedQty <= 0 || !inventoryMap[itemCode]) {
+        if (!inventoryMap[itemCode]) {
+          console.warn(`Inventory item not found for item_code: ${itemCode}`);
+        }
         continue;
       }
 
-      const detail = inventoryDetails[0];
+      const detail = inventoryMap[itemCode];
       let currentBoxQty = parseFloat(detail.box_quantity) || 0;
       let packetsPerBox = parseFloat(detail.packet_quantity) || 0;
 
@@ -1314,25 +1330,11 @@ const updateInventoryFromGRN = async (connection, receiptId, isReversal = false)
       if (packetsPerBox <= 0) {
         const poPacketQty = parseFloat(line.po_packet_quantity) || 0;
         if (poPacketQty > 0) {
-          // Use PO packet_quantity and update inventory item (this sets the packets per box)
           packetsPerBox = poPacketQty;
-          await connection.execute(
-            `UPDATE inventory_item_details 
-             SET packet_quantity = ?, updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?`,
-            [packetsPerBox, detail.id]
-          );
-          console.log(`Set packets_per_box for ${itemCode} from PO: ${packetsPerBox}`);
+          packetUpdates.push({ id: detail.id, itemCode, packetsPerBox, source: 'PO' });
         } else {
-          // Default to 1 packet per box if no packet_quantity available
           packetsPerBox = 1;
-          await connection.execute(
-            `UPDATE inventory_item_details 
-             SET packet_quantity = ?, updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?`,
-            [packetsPerBox, detail.id]
-          );
-          console.log(`Set default packets_per_box=1 for ${itemCode}`);
+          packetUpdates.push({ id: detail.id, itemCode, packetsPerBox, source: 'default' });
         }
       }
 
@@ -1349,30 +1351,58 @@ const updateInventoryFromGRN = async (connection, receiptId, isReversal = false)
       }
 
       // Calculate new boxes (packets per box remains constant)
-      // packet_quantity represents "packets per box" - it's a constant property of the item
-      // We store boxes as a decimal to preserve partial boxes
-      // Example: 10 boxes × 12 packets/box = 120 units
-      // Add 10 units → 130 units → 130/12 = 10.833... boxes
-      // We store 10.83 boxes so that: 10.83 × 12 = 129.96 ≈ 130 units
       const newBoxQty = newTotalUnits / packetsPerBox;
-      
-      // Round to 2 decimal places for storage
       const newBoxQtyRounded = Math.round(newBoxQty * 100) / 100;
+
+      updates.push({
+        id: detail.id,
+        boxQty: newBoxQtyRounded,
+        itemCode,
+        currentBoxQty,
+        packetsPerBox,
+        totalUnits,
+        newTotalUnits,
+        acceptedQty
+      });
+    }
+    
+    // Batch update packet_quantity for items that need it
+    if (packetUpdates.length > 0) {
+      await connection.execute(`
+        UPDATE inventory_item_details 
+        SET packet_quantity = CASE id
+          ${packetUpdates.map(() => 'WHEN ? THEN ?').join(' ')}
+        END,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${packetUpdates.map(() => '?').join(',')})
+      `, [
+        ...packetUpdates.flatMap(u => [u.id, u.packetsPerBox]),
+        ...packetUpdates.map(u => u.id)
+      ]);
       
-      // Note: packet_quantity (packets per box) remains constant - it's a property of the item
-      // We update box_quantity as a decimal to preserve partial boxes
-
-      // Update inventory_item_details - update box_quantity (as decimal), keep packet_quantity constant
-      await connection.execute(
-        `UPDATE inventory_item_details 
-         SET box_quantity = ?, 
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [newBoxQtyRounded, detail.id]
-      );
-
-      const calculatedTotal = newBoxQtyRounded * packetsPerBox;
-      console.log(`Updated inventory for ${itemCode}: ${currentBoxQty} boxes × ${packetsPerBox} packets/box (${totalUnits} units) → ${newBoxQtyRounded} boxes × ${packetsPerBox} packets/box (${calculatedTotal.toFixed(2)} calculated units, ${newTotalUnits} actual units) (${isReversal ? '-' : '+'}${acceptedQty} units)`);
+      packetUpdates.forEach(u => {
+        console.log(`Set packets_per_box for ${u.itemCode} ${u.source === 'PO' ? 'from PO' : 'default'}: ${u.packetsPerBox}`);
+      });
+    }
+    
+    // Batch update box_quantity for all items
+    if (updates.length > 0) {
+      await connection.execute(`
+        UPDATE inventory_item_details 
+        SET box_quantity = CASE id
+          ${updates.map(() => 'WHEN ? THEN ?').join(' ')}
+        END,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${updates.map(() => '?').join(',')})
+      `, [
+        ...updates.flatMap(u => [u.id, u.boxQty]),
+        ...updates.map(u => u.id)
+      ]);
+      
+      updates.forEach(u => {
+        const calculatedTotal = u.boxQty * u.packetsPerBox;
+        console.log(`Updated inventory for ${u.itemCode}: ${u.currentBoxQty} boxes × ${u.packetsPerBox} packets/box (${u.totalUnits} units) → ${u.boxQty} boxes × ${u.packetsPerBox} packets/box (${calculatedTotal.toFixed(2)} calculated units, ${u.newTotalUnits} actual units) (${isReversal ? '-' : '+'}${u.acceptedQty} units)`);
+      });
     }
   } catch (error) {
     console.error('Error updating inventory from GRN:', error);
@@ -2448,39 +2478,72 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
       [req.params.id]
     );
     
-    // Reverse old inventory (reduce inventory by old accepted quantities)
-    for (const oldLine of oldLines) {
-      const itemCode = oldLine.item_code;
-      const oldAcceptedQty = parseFloat(oldLine.quantity_accepted) || 0;
+    // OPTIMIZED: Batch reverse old inventory (reduce inventory by old accepted quantities)
+    if (oldLines.length > 0) {
+      const oldItemCodes = oldLines.map(line => line.item_code).filter(Boolean);
       
-      if (oldAcceptedQty <= 0) continue;
+      if (oldItemCodes.length > 0) {
+        // Batch fetch all inventory details
+        const [oldInventoryDetails] = await connection.execute(
+          `SELECT iid.id, iid.box_quantity, iid.packet_quantity, ih.item_code
+           FROM inventory_item_details iid
+           JOIN inventory_items ih ON iid.inventory_item_id = ih.id
+           WHERE ih.item_code IN (${oldItemCodes.map(() => '?').join(',')}) AND iid.is_active = 1`,
+          oldItemCodes
+        );
+        
+        // Create map for quick lookup
+        const oldInventoryMap = {};
+        oldInventoryDetails.forEach(detail => {
+          if (!oldInventoryMap[detail.item_code]) {
+            oldInventoryMap[detail.item_code] = detail;
+          }
+        });
+        
+        // Prepare batch updates
+        const reverseUpdates = [];
+        
+        for (const oldLine of oldLines) {
+          const itemCode = oldLine.item_code;
+          const oldAcceptedQty = parseFloat(oldLine.quantity_accepted) || 0;
+          
+          if (oldAcceptedQty <= 0 || !oldInventoryMap[itemCode]) continue;
 
-      const [inventoryDetails] = await connection.execute(
-        `SELECT iid.id, iid.box_quantity, iid.packet_quantity
-         FROM inventory_item_details iid
-         JOIN inventory_items ih ON iid.inventory_item_id = ih.id
-         WHERE ih.item_code = ? AND iid.is_active = 1
-         LIMIT 1`,
-        [itemCode]
-      );
+          const detail = oldInventoryMap[itemCode];
+          const currentBoxQty = parseFloat(detail.box_quantity) || 0;
+          const currentPacketQty = parseFloat(detail.packet_quantity) || 0;
+          const totalUnits = currentBoxQty * currentPacketQty;
 
-      if (inventoryDetails.length > 0) {
-        const detail = inventoryDetails[0];
-        const currentBoxQty = parseFloat(detail.box_quantity) || 0;
-        const currentPacketQty = parseFloat(detail.packet_quantity) || 0;
-        const totalUnits = currentBoxQty * currentPacketQty;
+          if (currentPacketQty > 0) {
+            const newTotalUnits = Math.max(0, totalUnits - oldAcceptedQty);
+            const newBoxQty = Math.floor(newTotalUnits / currentPacketQty);
+            const newPacketQty = newTotalUnits % currentPacketQty;
 
-        if (currentPacketQty > 0) {
-          const newTotalUnits = Math.max(0, totalUnits - oldAcceptedQty);
-          const newBoxQty = Math.floor(newTotalUnits / currentPacketQty);
-          const newPacketQty = newTotalUnits % currentPacketQty;
-
-          await connection.execute(
-            `UPDATE inventory_item_details 
-             SET box_quantity = ?, packet_quantity = ?, updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?`,
-            [newBoxQty, newPacketQty, detail.id]
-          );
+            reverseUpdates.push({
+              id: detail.id,
+              boxQty: newBoxQty,
+              packetQty: newPacketQty
+            });
+          }
+        }
+        
+        // Batch update all reversed inventory
+        if (reverseUpdates.length > 0) {
+          await connection.execute(`
+            UPDATE inventory_item_details 
+            SET box_quantity = CASE id
+              ${reverseUpdates.map(() => 'WHEN ? THEN ?').join(' ')}
+            END,
+            packet_quantity = CASE id
+              ${reverseUpdates.map(() => 'WHEN ? THEN ?').join(' ')}
+            END,
+            updated_at = CURRENT_TIMESTAMP
+            WHERE id IN (${reverseUpdates.map(() => '?').join(',')})
+          `, [
+            ...reverseUpdates.flatMap(u => [u.id, u.boxQty]),
+            ...reverseUpdates.flatMap(u => [u.id, u.packetQty]),
+            ...reverseUpdates.map(u => u.id)
+          ]);
         }
       }
     }
@@ -2488,10 +2551,43 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
     // Delete existing lines and insert new ones
     await connection.execute('DELETE FROM po_receipt_lines WHERE receipt_id = ?', [req.params.id]);
     
-    // Insert updated lines
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const receiptLineId = await getNextSequenceValue(connection, 'PO_RECEIPT_LINE_ID_SEQ');
+    // OPTIMIZED: Batch insert updated lines instead of individual inserts
+    if (lines.length > 0) {
+      // Get all sequence values at once (if needed, otherwise generate IDs)
+      const receiptLineValues = [];
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const receiptLineId = await getNextSequenceValue(connection, 'PO_RECEIPT_LINE_ID_SEQ');
+        
+        receiptLineValues.push([
+          receiptLineId,
+          req.params.id,
+          line.line_id,
+          i + 1,
+          line.item_code,
+          line.item_name,
+          line.description,
+          line.uom,
+          line.quantity_ordered,
+          line.quantity_received,
+          line.quantity_accepted,
+          line.quantity_rejected,
+          line.unit_price,
+          line.tax_rate || 0,
+          line.tax_amount || 0,
+          line.line_amount,
+          line.lot_number,
+          line.serial_number,
+          line.expiration_date,
+          line.rejection_reason,
+          line.notes
+        ]);
+      }
+      
+      // Batch insert all lines
+      const placeholders = receiptLineValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const flatValues = receiptLineValues.flat();
       
       await connection.execute(`
         INSERT INTO po_receipt_lines (
@@ -2499,30 +2595,8 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
           description, uom, quantity_ordered, quantity_received, quantity_accepted,
           quantity_rejected, unit_price, tax_rate, tax_amount, line_amount, lot_number, serial_number,
           expiration_date, rejection_reason, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        receiptLineId,
-        req.params.id,
-        line.line_id,
-        i + 1,
-        line.item_code,
-        line.item_name,
-        line.description,
-        line.uom,
-        line.quantity_ordered,
-        line.quantity_received,
-        line.quantity_accepted,
-        line.quantity_rejected,
-        line.unit_price,
-        line.tax_rate || 0,
-        line.tax_amount || 0,
-        line.line_amount,
-        line.lot_number,
-        line.serial_number,
-        line.expiration_date,
-        line.rejection_reason,
-        line.notes
-      ]);
+        ) VALUES ${placeholders}
+      `, flatValues);
     }
     
     // Recalculate PO header amount_received and status after editing GRN

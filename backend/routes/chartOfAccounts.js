@@ -391,14 +391,23 @@ router.post('/instances', async (req, res) => {
     
     const coaInstanceId = result.insertId;
     
-    // Add segments
+    // OPTIMIZED: Batch insert segments instead of individual inserts
     if (segments && segments.length > 0) {
-      for (const segment of segments) {
-        await pool.execute(
-          'INSERT INTO coa_segment_instances (coa_instance_id, segment_name, segment_length, display_order) VALUES (?, ?, ?, ?)',
-          [coaInstanceId, segment.name, segment.length, segment.display_order || 0]
-        );
-      }
+      const segmentValues = segments.map(segment => [
+        coaInstanceId,
+        segment.name,
+        segment.length,
+        segment.display_order || 0
+      ]);
+      
+      // Use batch insert
+      const placeholders = segmentValues.map(() => '(?, ?, ?, ?)').join(', ');
+      const flatValues = segmentValues.flat();
+      
+      await pool.execute(
+        `INSERT INTO coa_segment_instances (coa_instance_id, segment_name, segment_length, display_order) VALUES ${placeholders}`,
+        flatValues
+      );
     }
     
     res.json({ success: true, data: { id: coaInstanceId, coa_code, coa_name, description } });

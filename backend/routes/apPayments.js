@@ -32,54 +32,90 @@ router.get('/', async (req, res) => {
             params.push(payment_date_to);
         }
         
+        // OPTIMIZED: Use JOIN instead of subqueries for better performance
         const [paymentRows] = await pool.execute(`
-            SELECT p.*, 
-                   s.supplier_name, s.supplier_number,
-                   COALESCE((
-                       SELECT COUNT(*) 
-                       FROM ap_payment_applications pa 
-                       WHERE pa.payment_id = p.payment_id AND pa.status = 'ACTIVE'
-                   ), 0) as application_count,
-                   COALESCE((
-                       SELECT SUM(pa.applied_amount) 
-                       FROM ap_payment_applications pa 
-                       WHERE pa.payment_id = p.payment_id AND pa.status = 'ACTIVE'
-                   ), 0) as calculated_applied
+            SELECT 
+                p.*, 
+                s.supplier_name, 
+                s.supplier_number,
+                COALESCE(pa_stats.application_count, 0) as application_count,
+                COALESCE(pa_stats.calculated_applied, 0) as calculated_applied
             FROM ap_payments p
             LEFT JOIN ap_suppliers s ON p.supplier_id = s.supplier_id
+            LEFT JOIN (
+                SELECT 
+                    payment_id,
+                    COUNT(*) as application_count,
+                    SUM(applied_amount) as calculated_applied
+                FROM ap_payment_applications
+                WHERE status = 'ACTIVE'
+                GROUP BY payment_id
+            ) pa_stats ON p.payment_id = pa_stats.payment_id
             ${whereClause}
             ORDER BY p.payment_date DESC, p.payment_id DESC
         `, params);
         
-        // Ensure amount_applied/unapplied_amount are consistent
+        // OPTIMIZED: Batch update amount_applied instead of individual queries
+        const updatesNeeded = [];
+        const paymentIdsToUpdate = [];
+        
         for (const row of paymentRows) {
             const calculatedApplied = Number(row.calculated_applied) || 0;
             const currentApplied = Number(row.amount_applied) || 0;
             
             if (Math.abs(calculatedApplied - currentApplied) > 0.01) {
-                try {
-                    await pool.execute(`
-                        UPDATE ap_payments 
-                        SET amount_applied = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE payment_id = ?
-                    `, [calculatedApplied, row.payment_id]);
-                    const [updatedRow] = await pool.execute(`
-                        SELECT payment_amount, amount_applied, unapplied_amount 
-                        FROM ap_payments 
-                        WHERE payment_id = ?
-                    `, [row.payment_id]);
-                    if (updatedRow[0]) {
-                        row.amount_applied = Number(updatedRow[0].amount_applied) || 0;
-                        row.unapplied_amount = Number(updatedRow[0].unapplied_amount) || 0;
-                    }
-                } catch (updateError) {
-                    console.error(`Error updating amount_applied for payment ${row.payment_id}:`, updateError);
-                    row.amount_applied = calculatedApplied;
-                    row.unapplied_amount = Number(row.payment_amount) - calculatedApplied;
-                }
+                updatesNeeded.push({
+                    payment_id: row.payment_id,
+                    calculatedApplied: calculatedApplied,
+                    payment_amount: Number(row.payment_amount) || 0
+                });
+                paymentIdsToUpdate.push(row.payment_id);
+                row.amount_applied = calculatedApplied;
+                row.unapplied_amount = Number(row.payment_amount) - calculatedApplied;
             } else {
                 row.amount_applied = Number(row.amount_applied) || 0;
                 row.unapplied_amount = Number(row.unapplied_amount) || 0;
+            }
+        }
+        
+        // Batch update all payments that need correction
+        if (updatesNeeded.length > 0) {
+            try {
+                // Use CASE statement for batch update
+                const updateValues = updatesNeeded.map(u => u.calculatedApplied);
+                const updateIds = updatesNeeded.map(u => u.payment_id);
+                
+                await pool.execute(`
+                    UPDATE ap_payments 
+                    SET amount_applied = CASE payment_id
+                        ${updatesNeeded.map(() => 'WHEN ? THEN ?').join(' ')}
+                    END,
+                    unapplied_amount = payment_amount - CASE payment_id
+                        ${updatesNeeded.map(() => 'WHEN ? THEN ?').join(' ')}
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                    WHERE payment_id IN (${updateIds.map(() => '?').join(',')})
+                `, [
+                    ...updatesNeeded.flatMap(u => [u.payment_id, u.calculatedApplied]),
+                    ...updatesNeeded.flatMap(u => [u.payment_id, u.calculatedApplied]),
+                    ...updateIds
+                ]);
+            } catch (updateError) {
+                console.error('Error batch updating payments:', updateError);
+                // Fallback: update individually if batch fails
+                for (const update of updatesNeeded) {
+                    try {
+                        await pool.execute(`
+                            UPDATE ap_payments 
+                            SET amount_applied = ?, 
+                                unapplied_amount = payment_amount - ?,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE payment_id = ?
+                        `, [update.calculatedApplied, update.calculatedApplied, update.payment_id]);
+                    } catch (individualError) {
+                        console.error(`Error updating payment ${update.payment_id}:`, individualError);
+                    }
+                }
             }
         }
 

@@ -72,28 +72,44 @@ async function updateInventoryFromARInvoice(invoiceId, isReversal = false) {
       [invoiceId]
     );
 
+    // OPTIMIZED: Batch fetch all inventory details in one query
+    if (invoiceLines.length === 0) return;
+    
+    const itemCodes = invoiceLines.map(line => line.item_code).filter(Boolean);
+    if (itemCodes.length === 0) return;
+    
+    const [allInventoryDetails] = await pool.execute(
+      `SELECT iid.id, iid.inventory_item_id, iid.box_quantity, iid.packet_quantity, iid.version, ih.item_code
+       FROM inventory_item_details iid
+       JOIN inventory_items ih ON iid.inventory_item_id = ih.id
+       WHERE ih.item_code IN (${itemCodes.map(() => '?').join(',')}) AND iid.is_active = 1`,
+      itemCodes
+    );
+    
+    // Create map for quick lookup
+    const inventoryMap = {};
+    allInventoryDetails.forEach(detail => {
+      if (!inventoryMap[detail.item_code]) {
+        inventoryMap[detail.item_code] = detail;
+      }
+    });
+    
+    // Prepare batch updates
+    const updates = [];
+    const packetUpdates = [];
+    
     for (const line of invoiceLines) {
       const itemCode = line.item_code;
       const quantitySold = parseFloat(line.quantity) || 0;
       
-      if (quantitySold <= 0) continue;
-
-      // Get current inventory item details
-      const [inventoryDetails] = await pool.execute(
-        `SELECT iid.id, iid.inventory_item_id, iid.box_quantity, iid.packet_quantity, iid.version
-         FROM inventory_item_details iid
-         JOIN inventory_items ih ON iid.inventory_item_id = ih.id
-         WHERE ih.item_code = ? AND iid.is_active = 1
-         LIMIT 1`,
-        [itemCode]
-      );
-
-      if (inventoryDetails.length === 0) {
-        console.warn(`Inventory item not found for item_code: ${itemCode}`);
+      if (quantitySold <= 0 || !inventoryMap[itemCode]) {
+        if (!inventoryMap[itemCode]) {
+          console.warn(`Inventory item not found for item_code: ${itemCode}`);
+        }
         continue;
       }
 
-      const detail = inventoryDetails[0];
+      const detail = inventoryMap[itemCode];
       let currentBoxQty = parseFloat(detail.box_quantity) || 0;
       let packetsPerBox = parseFloat(detail.packet_quantity) || 0;
 
@@ -101,13 +117,7 @@ async function updateInventoryFromARInvoice(invoiceId, isReversal = false) {
       // If packet_quantity is 0, default to 1
       if (packetsPerBox <= 0) {
         packetsPerBox = 1;
-        await pool.execute(
-          `UPDATE inventory_item_details 
-           SET packet_quantity = ?, updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?`,
-          [packetsPerBox, detail.id]
-        );
-        console.log(`Set default packets_per_box=1 for ${itemCode}`);
+        packetUpdates.push({ id: detail.id, itemCode });
       }
 
       // Calculate total units: boxes × packets per box
@@ -127,17 +137,49 @@ async function updateInventoryFromARInvoice(invoiceId, isReversal = false) {
       const newBoxQty = newTotalUnits / packetsPerBox;
       const newBoxQtyRounded = Math.round(newBoxQty * 100) / 100;
 
-      // Update inventory_item_details - only update box_quantity, keep packet_quantity constant
-      await pool.execute(
-        `UPDATE inventory_item_details 
-         SET box_quantity = ?, 
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [newBoxQtyRounded, detail.id]
-      );
-
-      const calculatedTotal = newBoxQtyRounded * packetsPerBox;
-      console.log(`Updated inventory for ${itemCode}: ${currentBoxQty} boxes × ${packetsPerBox} packets/box (${totalUnits} units) → ${newBoxQtyRounded} boxes × ${packetsPerBox} packets/box (${calculatedTotal.toFixed(2)} calculated units, ${newTotalUnits} actual units) (${isReversal ? '+' : '-'}${quantitySold} units)`);
+      updates.push({
+        id: detail.id,
+        boxQty: newBoxQtyRounded,
+        itemCode,
+        currentBoxQty,
+        packetsPerBox,
+        totalUnits,
+        newTotalUnits,
+        quantitySold
+      });
+    }
+    
+    // Batch update packet_quantity for items that need it
+    if (packetUpdates.length > 0) {
+      await pool.execute(`
+        UPDATE inventory_item_details 
+        SET packet_quantity = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${packetUpdates.map(() => '?').join(',')})
+      `, packetUpdates.map(u => u.id));
+      
+      packetUpdates.forEach(u => {
+        console.log(`Set default packets_per_box=1 for ${u.itemCode}`);
+      });
+    }
+    
+    // Batch update box_quantity for all items
+    if (updates.length > 0) {
+      await pool.execute(`
+        UPDATE inventory_item_details 
+        SET box_quantity = CASE id
+          ${updates.map(() => 'WHEN ? THEN ?').join(' ')}
+        END,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${updates.map(() => '?').join(',')})
+      `, [
+        ...updates.flatMap(u => [u.id, u.boxQty]),
+        ...updates.map(u => u.id)
+      ]);
+      
+      updates.forEach(u => {
+        const calculatedTotal = u.boxQty * u.packetsPerBox;
+        console.log(`Updated inventory for ${u.itemCode}: ${u.currentBoxQty} boxes × ${u.packetsPerBox} packets/box (${u.totalUnits} units) → ${u.boxQty} boxes × ${u.packetsPerBox} packets/box (${calculatedTotal.toFixed(2)} calculated units, ${u.newTotalUnits} actual units) (${isReversal ? '+' : '-'}${u.quantitySold} units)`);
+      });
     }
   } catch (error) {
     console.error('Error updating inventory from AR invoice:', error);
@@ -512,38 +554,66 @@ router.put('/:id', async (req, res) => {
       [req.params.id]
     );
     
-    // Reverse old inventory (add back inventory by old sold quantities)
-    for (const oldLine of oldLines) {
-      const itemCode = oldLine.item_code;
-      const oldQuantitySold = parseFloat(oldLine.quantity) || 0;
+    // OPTIMIZED: Batch reverse old inventory (add back inventory by old sold quantities)
+    if (oldLines.length > 0) {
+      const oldItemCodes = oldLines.map(line => line.item_code).filter(Boolean);
       
-      if (oldQuantitySold <= 0) continue;
-
-      const [inventoryDetails] = await pool.execute(
-        `SELECT iid.id, iid.box_quantity, iid.packet_quantity
-         FROM inventory_item_details iid
-         JOIN inventory_items ih ON iid.inventory_item_id = ih.id
-         WHERE ih.item_code = ? AND iid.is_active = 1
-         LIMIT 1`,
-        [itemCode]
-      );
-
-      if (inventoryDetails.length > 0) {
-        const detail = inventoryDetails[0];
-        const currentBoxQty = parseFloat(detail.box_quantity) || 0;
-        const currentPacketQty = parseFloat(detail.packet_quantity) || 0;
-        const packetsPerBox = currentPacketQty > 0 ? currentPacketQty : 1;
-        const totalUnits = currentBoxQty * packetsPerBox;
-
-        const newTotalUnits = totalUnits + oldQuantitySold;
-        const newBoxQty = Math.round((newTotalUnits / packetsPerBox) * 100) / 100;
-
-        await pool.execute(
-          `UPDATE inventory_item_details 
-           SET box_quantity = ?, updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?`,
-          [newBoxQty, detail.id]
+      if (oldItemCodes.length > 0) {
+        // Batch fetch all inventory details
+        const [oldInventoryDetails] = await pool.execute(
+          `SELECT iid.id, iid.box_quantity, iid.packet_quantity, ih.item_code
+           FROM inventory_item_details iid
+           JOIN inventory_items ih ON iid.inventory_item_id = ih.id
+           WHERE ih.item_code IN (${oldItemCodes.map(() => '?').join(',')}) AND iid.is_active = 1`,
+          oldItemCodes
         );
+        
+        // Create map for quick lookup
+        const oldInventoryMap = {};
+        oldInventoryDetails.forEach(detail => {
+          if (!oldInventoryMap[detail.item_code]) {
+            oldInventoryMap[detail.item_code] = detail;
+          }
+        });
+        
+        // Prepare batch updates
+        const reverseUpdates = [];
+        
+        for (const oldLine of oldLines) {
+          const itemCode = oldLine.item_code;
+          const oldQuantitySold = parseFloat(oldLine.quantity) || 0;
+          
+          if (oldQuantitySold <= 0 || !oldInventoryMap[itemCode]) continue;
+
+          const detail = oldInventoryMap[itemCode];
+          const currentBoxQty = parseFloat(detail.box_quantity) || 0;
+          const currentPacketQty = parseFloat(detail.packet_quantity) || 0;
+          const packetsPerBox = currentPacketQty > 0 ? currentPacketQty : 1;
+          const totalUnits = currentBoxQty * packetsPerBox;
+
+          const newTotalUnits = totalUnits + oldQuantitySold;
+          const newBoxQty = Math.round((newTotalUnits / packetsPerBox) * 100) / 100;
+
+          reverseUpdates.push({
+            id: detail.id,
+            boxQty: newBoxQty
+          });
+        }
+        
+        // Batch update all reversed inventory
+        if (reverseUpdates.length > 0) {
+          await pool.execute(`
+            UPDATE inventory_item_details 
+            SET box_quantity = CASE id
+              ${reverseUpdates.map(() => 'WHEN ? THEN ?').join(' ')}
+            END,
+            updated_at = CURRENT_TIMESTAMP
+            WHERE id IN (${reverseUpdates.map(() => '?').join(',')})
+          `, [
+            ...reverseUpdates.flatMap(u => [u.id, u.boxQty]),
+            ...reverseUpdates.map(u => u.id)
+          ]);
+        }
       }
     }
 
