@@ -2470,6 +2470,8 @@ router.post('/receipts', authenticateToken, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'CREATE', 'RECEIPT', receiptId, null, req.body);
     
+    // Commit the transaction
+    await connection.commit();
     connection.release();
     res.status(201).json({ 
       message: 'Goods receipt created successfully',
@@ -2692,9 +2694,15 @@ router.put('/receipts/:id', authenticateToken, async (req, res) => {
     // Log audit trail
     await logAuditTrail(connection, req.user.id, 'UPDATE', 'RECEIPT', req.params.id, oldValues, req.body);
     
+    // Commit the transaction
+    await connection.commit();
     connection.release();
     res.json({ message: 'Goods receipt updated successfully' });
   } catch (error) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
     console.error('Error updating goods receipt:', error);
     res.status(500).json({ error: 'Failed to update goods receipt' });
   }
