@@ -842,8 +842,6 @@ export const PurchaseOrderForm: React.FC<PurchaseOrderFormProps> = ({
         }))
       };
 
-
-
       console.log('Complete payload being sent to API:', payload);
       console.log('Payload lines:', payload.lines);
 
