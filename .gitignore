@@ -1,9 +1,9 @@
-# Backend repository - ignore frontend folder
+# Backend repository - ignore frontend folder (frontend is in separate repo)
 frontend/
 
 # Backend specific ignores
 backend/node_modules/
-backend/.env
+# backend/.env  # Commented out to allow .env file to be committed
 backend/dist/
 backend/uploads/
 backend/*.log
